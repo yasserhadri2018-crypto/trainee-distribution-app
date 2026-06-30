@@ -1,0 +1,3651 @@
+        // Global State
+        let currentStep = 1;
+        let maxReachedStep = 1;
+        let sf01Data = null, ss01Data = null;
+        let sf01FileDate = null, ss01FileDate = null;
+        let selectedDepartment = null;
+        let selectedCourseTraineeCount = 0;
+        let committeeCount = 1;
+        let committeeMode = 'trainees'; // 'rooms' or 'trainees' - default is trainees
+        let traineesPerCommittee = 30; // Default trainees per committee
+        let roomNames = [];
+        let allRoomsInBuilding = [];
+        let selectedBuildings = []; // Array of selected building names
+        let roomsWithBuilding = []; // [{room: 'قاعة 101', building: 'مبنى أ', colorIndex: 0}, ...]
+        let committeeRooms = []; // Array of length committeeCount, each element is room object or null
+        const buildingColors = [
+            '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+            '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'
+        ]; // 10 colors for buildings
+
+        // Status Filter - Predefined lists
+        const defaultIncludedStatuses = [
+            'مقرر مسجل عن طريق مدير النظام',
+            'مقرر مسجل عن طريق الويب',
+            'مقرر مسجل عن طريق االويب',
+            'مقرر معاد قيده لتعديل الحرمان'
+        ];
+        const defaultExcludedStatuses = [
+            'انسحاب فصلي',
+            'مطوي قيده',
+            'حرمان بسبب غياب',
+            'مطوي قيده لإنقطاع أسبوعين'
+        ];
+        let includedStatuses = [];
+        let excludedStatuses = [];
+        let unknownStatuses = []; // New: statuses not in predefined lists
+        let allStatuses = {};
+        let selectedStatusItem = null;
+        let sortOrder = 'traineeId';
+        let traineesPerPage = 20; // Default trainees per page for PDF
+        let selectedCourses = []; // Array for multiple course selection
+        let excludedInstructors = []; // Names of instructors the user explicitly excluded (Step 4)
+        let committeeDistribution = []; // [{name: 'لجنة 1', count: 15, locked: false}, ...]
+        let totalTraineesCount = 0; // Total trainees for selected courses
+        // Configure app database (uses shared utils.js)
+        configureDB('traineeDistributionDB');
+
+        // New File - calls shared clearAllData()
+        function newFile() {
+            if (confirm('هل أنت متأكد من رغبتك برفع ملف جديد وتجاهل هذه البيانات؟')) {
+                clearAllData().then(() => location.reload());
+            }
+        }
+
+        // Auto-restore on load
+        async function restoreData() {
+            try {
+                const sf01Result = await loadFromIndexedDB('sf01Data');
+                const ss01Result = await loadFromIndexedDB('ss01Data');
+                const dateResult = await loadFromIndexedDB('sf01FileDate');
+
+                if (sf01Result?.rawData && sf01Result.rawData.length > 0) {
+                    sf01Data = sf01Result.rawData;
+                    sf01FileDate = dateResult?.rawData ? new Date(dateResult.rawData) : new Date();
+                    maxReachedStep = 2;
+                    currentStep = 2;
+
+                    // Calculate age like in normal upload
+                    const now = new Date();
+                    const diff = now - sf01FileDate;
+                    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+                    // Age-based color class
+                    let ageClass = 'age-normal';
+                    if (days > 5) ageClass = 'age-critical';
+                    else if (days > 2) ageClass = 'age-warning';
+
+                    document.getElementById('sf01Box').classList.add('loaded');
+                    document.getElementById('sf01Info').innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div><strong>[OK] تم استعادة البيانات</strong></div>
+                            <button onclick="deleteReport('sf01')" title="حذف التقرير" 
+                                    style="background:none; border:none; color:var(--accent-red); cursor:pointer; padding:4px;">
+                                <i data-lucide="trash-2" style="width:16px; height:16px;"></i>
+                            </button>
+                        </div>
+                        <div>تاريخ الملف: ${sf01FileDate.toLocaleDateString('ar-SA')}</div>
+                        <div class="${ageClass}">عمر التقرير: ${days} يوم و ${hours} ساعة و ${minutes} دقيقة</div>
+                        <div>عدد السجلات: ${sf01Data.length}</div>
+                    `;
+                    document.getElementById('sf01Info').classList.add('show');
+                    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+                    populateStep2();
+                    updateStepUI();
+                    showToast('تم استعادة البيانات المحفوظة', 'success');
+                }
+
+                if (ss01Result?.rawData && ss01Result.rawData.length > 0) {
+                    ss01Data = ss01Result.rawData;
+
+                    // Load SS01 file date
+                    const ss01DateResult = await loadFromIndexedDB('ss01FileDate');
+                    ss01FileDate = ss01DateResult?.rawData ? new Date(ss01DateResult.rawData) : new Date();
+
+                    const now = new Date();
+                    const diff = now - ss01FileDate;
+                    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+                    let ageClass = 'age-normal';
+                    if (days > 5) ageClass = 'age-critical';
+                    else if (days > 2) ageClass = 'age-warning';
+
+                    document.getElementById('ss01Box').classList.add('loaded');
+                    document.getElementById('ss01Info').innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div><strong>[OK] تم استعادة بيانات القاعات</strong></div>
+                            <button onclick="deleteReport('ss01')" title="حذف التقرير" 
+                                    style="background:none; border:none; color:var(--accent-red); cursor:pointer; padding:4px;">
+                                <i data-lucide="trash-2" style="width:16px; height:16px;"></i>
+                            </button>
+                        </div>
+                        <div>تاريخ الملف: ${ss01FileDate.toLocaleDateString('ar-SA')}</div>
+                        <div class="${ageClass}">عمر التقرير: ${days} يوم و ${hours} ساعة و ${minutes} دقيقة</div>
+                        <div>عدد السجلات: ${ss01Data.length}</div>
+                    `;
+                    document.getElementById('ss01Info').classList.add('show');
+                    if (typeof lucide !== 'undefined') lucide.createIcons();
+                }
+
+                // Restore course selection
+                const courseResult = await loadFromIndexedDB('userCourseSelection');
+                if (courseResult?.rawData) {
+                    if (courseResult.rawData.department) {
+                        selectedDepartment = courseResult.rawData.department;
+                    }
+                    if (courseResult.rawData.courses && courseResult.rawData.courses.length > 0) {
+                        selectedCourses = courseResult.rawData.courses;
+                    }
+                }
+
+                // Restore room data
+                const roomResult = await loadFromIndexedDB('userRoomData');
+                if (roomResult?.rawData) {
+                    roomNames = roomResult.rawData.roomNames || [];
+                    roomsWithBuilding = roomResult.rawData.roomsWithBuilding || [];
+                    committeeRooms = roomResult.rawData.committeeRooms || [];
+                    selectedBuildings = roomResult.rawData.selectedBuildings || [];
+                    if (roomResult.rawData.committeeCount) {
+                        committeeCount = roomResult.rawData.committeeCount;
+                    }
+                }
+
+                // Restore committee settings
+                const committeeSettingsResult = await loadFromIndexedDB('userCommitteeSettings');
+                if (committeeSettingsResult?.rawData) {
+                    if (committeeSettingsResult.rawData.committeeMode) {
+                        committeeMode = committeeSettingsResult.rawData.committeeMode;
+                    }
+                    if (committeeSettingsResult.rawData.traineesPerCommittee) {
+                        traineesPerCommittee = committeeSettingsResult.rawData.traineesPerCommittee;
+                    }
+                    if (committeeSettingsResult.rawData.committeeCount) {
+                        committeeCount = committeeSettingsResult.rawData.committeeCount;
+                    }
+                }
+
+                // Restore print settings
+                const printSettingsResult = await loadFromIndexedDB('userPrintSettings');
+                if (printSettingsResult?.rawData) {
+                    const ps = printSettingsResult.rawData;
+                    if (ps.rowHeightLevel) {
+                        setTimeout(() => setRowHeight(ps.rowHeightLevel), 300);
+                    }
+                    if (ps.sortOrder) {
+                        sortOrder = ps.sortOrder;
+                        const radio = document.querySelector(`input[name="sortOrder"][value="${ps.sortOrder}"]`);
+                        if (radio) radio.checked = true;
+                    }
+                    if (ps.traineesPerPage !== undefined) {
+                        const tppInput = document.getElementById('traineesPerPage');
+                        if (tppInput) tppInput.value = ps.traineesPerPage || '';
+                    }
+                    if (ps.showSignatureFooter !== undefined) {
+                        const sigCheckbox = document.getElementById('showSignatureFooter');
+                        if (sigCheckbox) sigCheckbox.checked = ps.showSignatureFooter;
+                    }
+                    if (ps.hideExtraColumns !== undefined) {
+                        const hideColsCheckbox = document.getElementById('hideExtraColumns');
+                        if (hideColsCheckbox) hideColsCheckbox.checked = ps.hideExtraColumns;
+                    }
+                }
+
+            } catch (e) {
+                console.log('No saved data to restore:', e);
+            }
+        }
+
+        // Restore defaults - show modal with selectable options
+        function restoreDefaults() {
+            // Remove existing modal if any
+            document.getElementById('restoreDefaultsModal')?.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'restoreDefaultsModal';
+            modal.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999;';
+            modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+            modal.innerHTML = `
+                <div style="background:var(--bg-card); border-radius:16px; padding:20px; max-width:520px; width:95%; border:1px solid var(--border-dark);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <h3 style="color:var(--accent-gold); margin:0; display:flex; align-items:center; gap:8px; font-size:16px;">
+                            <i data-lucide="rotate-ccw" style="width:20px; height:20px;"></i>
+                            استرجاع الافتراضي
+                        </h3>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:var(--text-muted); font-size:12px;">
+                            <input type="checkbox" id="toggleAllReset" checked 
+                                   onchange="document.querySelectorAll('#restoreDefaultsModal .reset-option').forEach(c=>c.checked=this.checked)"
+                                   style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            تحديد الكل
+                        </label>
+                    </div>
+                    <p style="color:var(--text-muted); font-size:12px; margin:0 0 15px;">
+                        اختر البيانات المراد إعادة تعيينها. الملفات المرفوعة لن تتأثر.
+                    </p>
+                    
+                    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:15px;">
+                        <label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg-header); border-radius:6px; cursor:pointer; border:1px solid var(--border-dark);">
+                            <input type="checkbox" id="resetStatuses" class="reset-option" checked style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            <span style="color:var(--text-light); font-size:13px;">تصنيف الحالات</span>
+                            <span style="color:var(--text-muted); font-size:11px; margin-right:auto;">(الخطوة 2)</span>
+                        </label>
+                        
+                        <label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg-header); border-radius:6px; cursor:pointer; border:1px solid var(--border-dark);">
+                            <input type="checkbox" id="resetCourses" class="reset-option" checked style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            <span style="color:var(--text-light); font-size:13px;">اختيار المقررات</span>
+                            <span style="color:var(--text-muted); font-size:11px; margin-right:auto;">(الخطوة 3)</span>
+                        </label>
+                        
+                        <label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg-header); border-radius:6px; cursor:pointer; border:1px solid var(--border-dark);">
+                            <input type="checkbox" id="resetCommitteeSettings" class="reset-option" checked style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            <span style="color:var(--text-light); font-size:13px;">إعدادات اللجان</span>
+                            <span style="color:var(--text-muted); font-size:11px; margin-right:auto;">(الخطوة 4)</span>
+                        </label>
+                        
+                        <label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg-header); border-radius:6px; cursor:pointer; border:1px solid var(--border-dark);">
+                            <input type="checkbox" id="resetRooms" class="reset-option" checked style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            <span style="color:var(--text-light); font-size:13px;">القاعات والمباني</span>
+                            <span style="color:var(--text-muted); font-size:11px; margin-right:auto;">(الخطوة 5)</span>
+                        </label>
+                        
+                        <label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg-header); border-radius:6px; cursor:pointer; border:1px solid var(--border-dark);">
+                            <input type="checkbox" id="resetDistribution" class="reset-option" checked style="width:16px; height:16px; accent-color:var(--accent-gold);">
+                            <span style="color:var(--text-light); font-size:13px;">توزيع المتدربين</span>
+                            <span style="color:var(--text-muted); font-size:11px; margin-right:auto;">(الخطوة 5)</span>
+                        </label>
+                    </div>
+                    
+                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                        <button onclick="document.getElementById('restoreDefaultsModal').remove()" 
+                                style="padding:8px 18px; border-radius:6px; border:1px solid var(--border-dark); background:var(--bg-header); color:var(--text-light); cursor:pointer; font-family:inherit; font-size:13px;">
+                            إلغاء
+                        </button>
+                        <button onclick="executeRestoreDefaults()" 
+                                style="padding:8px 18px; border-radius:6px; border:none; background:linear-gradient(135deg, var(--accent-gold), #f59e0b); color:#000; cursor:pointer; font-family:inherit; font-weight:600; font-size:13px;">
+                            تنفيذ
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        function executeRestoreDefaults() {
+            const resetStatuses = document.getElementById('resetStatuses')?.checked;
+            const resetCourses = document.getElementById('resetCourses')?.checked;
+            const resetCommitteeSettings = document.getElementById('resetCommitteeSettings')?.checked;
+            const resetRooms = document.getElementById('resetRooms')?.checked;
+            const resetDistribution = document.getElementById('resetDistribution')?.checked;
+
+            if (!resetStatuses && !resetCourses && !resetCommitteeSettings && !resetRooms && !resetDistribution) {
+                showToast('لم يتم اختيار أي بيانات للإعادة', 'warning');
+                return;
+            }
+
+            // Close modal
+            document.getElementById('restoreDefaultsModal')?.remove();
+
+            // Clear status classifications
+            if (resetStatuses) {
+                includedStatuses = [];
+                excludedStatuses = [];
+                unknownStatuses = [];
+                clearSavedData('userStatusClassifications');
+            }
+
+            // Clear course selection
+            if (resetCourses) {
+                selectedDepartment = null;
+                selectedCourses = [];
+                excludedInstructors = [];
+                clearSavedData('userCourseSelection');
+            }
+
+            // Clear committee settings (count, mode)
+            if (resetCommitteeSettings) {
+                committeeCount = 1;
+                committeeMode = 'trainees';
+                step6LastCommitteeCount = 0;
+            }
+
+            // Clear room data (rooms, buildings, committeeRooms)
+            if (resetRooms) {
+                roomNames = [];
+                roomsWithBuilding = [];
+                selectedBuildings = [];
+                committeeRooms = new Array(committeeCount).fill(null);
+                clearSavedData('userRoomData');
+            }
+
+            // Clear distribution (committeeDistribution - names and counts)
+            if (resetDistribution) {
+                committeeDistribution = [];
+            }
+
+            // Reset to step 2 if we have data, otherwise step 1
+            if (sf01Data) {
+                currentStep = 2;
+                maxReachedStep = 2;
+                populateStep2();
+            } else {
+                currentStep = 1;
+                maxReachedStep = 1;
+            }
+            updateStepUI();
+            showToast('تم استرجاع الإعدادات المحددة', 'success');
+        }
+
+        // Initialize using shared utilities
+        loadTheme();
+        initDB().then(() => restoreData());
+
+        // File Upload
+        document.getElementById('sf01Input').addEventListener('change', (e) => handleFileUpload(e, 'sf01'));
+        document.getElementById('ss01Input').addEventListener('change', (e) => handleFileUpload(e, 'ss01'));
+
+        // Drag & Drop Support
+        function setupDragDrop(boxId, inputId, type) {
+            const box = document.getElementById(boxId);
+            const input = document.getElementById(inputId);
+
+            box.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                box.classList.add('drag-over');
+            });
+
+            box.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                box.classList.remove('drag-over');
+            });
+
+            box.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                box.classList.remove('drag-over');
+
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    // Create a synthetic event-like object for handleFileUpload
+                    const dt = new DataTransfer();
+                    dt.items.add(files[0]);
+                    input.files = dt.files;
+                    input.dispatchEvent(new Event('change'));
+                }
+            });
+        }
+
+        setupDragDrop('sf01Box', 'sf01Input', 'sf01');
+        setupDragDrop('ss01Box', 'ss01Input', 'ss01');
+
+        // Loading Overlay Functions
+        function showLoading(message = 'جاري المعالجة...') {
+            // Remove existing overlay if any
+            document.getElementById('loadingOverlay')?.remove();
+
+            const overlay = document.createElement('div');
+            overlay.id = 'loadingOverlay';
+            overlay.className = 'loading-overlay';
+            overlay.innerHTML = `
+                <div class="loading-spinner"></div>
+                <div class="loading-text">${message}</div>
+            `;
+            document.body.appendChild(overlay);
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay')?.remove();
+        }
+
+        // File Validation
+        function validateFile(file, type) {
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            const allowedExtensions = ['.csv'];
+
+            // Check file size
+            if (file.size > maxSize) {
+                showToast('حجم الملف كبير جداً (الحد الأقصى 50 ميجابايت)', 'error');
+                return false;
+            }
+
+            // Check file extension
+            const fileName = file.name.toLowerCase();
+            const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+            if (!hasValidExtension) {
+                showToast('صيغة الملف غير مدعومة. يرجى استخدام CSV', 'error');
+                return false;
+            }
+
+            // Check if file is empty
+            if (file.size === 0) {
+                showToast('الملف فارغ', 'error');
+                return false;
+            }
+
+            return true;
+        }
+
+        function handleFileUpload(e, type) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // Validate file first
+            if (!validateFile(file, type)) {
+                e.target.value = ''; // Reset input
+                return;
+            }
+
+            const box = document.getElementById(type + 'Box');
+            const info = document.getElementById(type + 'Info');
+            const fileDate = new Date(file.lastModified);
+
+            showLoading('جاري قراءة الملف...');
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                let data;
+                if (file.name.endsWith('.csv')) {
+                    data = parseCSV(event.target.result);
+                } else {
+                    hideLoading();
+                    showToast('صيغة الملف غير مدعومة. يرجى استخدام ملفات CSV', 'error');
+                    return;
+                }
+
+                // Validate data has rows
+                if (!data || data.length === 0) {
+                    hideLoading();
+                    showToast('الملف لا يحتوي على بيانات صالحة', 'error');
+                    return;
+                }
+
+                // Validate required columns
+                const requiredColumns = type === 'sf01'
+                    ? ['القسم', 'المقرر', 'اسم المقرر', 'نوع الجدولة', 'حالة تسجيل', 'رقم المتدرب', 'إسم المتدرب', 'الرقم المرجعي', 'المدرب']
+                    : ['قاعة', 'مبنى'];
+                const fileColumns = Object.keys(data[0]);
+                const missingColumns = requiredColumns.filter(col => !fileColumns.includes(col));
+
+                if (missingColumns.length > 0) {
+                    hideLoading();
+                    showToast(`الملف لا يحتوي على الأعمدة المطلوبة: ${missingColumns.join('، ')}`, 'error');
+                    return;
+                }
+
+                hideLoading();
+
+                if (type === 'sf01') {
+                    sf01Data = data;
+                    sf01FileDate = fileDate;
+                    maxReachedStep = Math.max(maxReachedStep, 2);
+                    // Save to IndexedDB using shared utils
+                    saveToIndexedDB(data, 'sf01Data');
+                    saveToIndexedDB(fileDate.toISOString(), 'sf01FileDate');
+                } else {
+                    ss01Data = data;
+                    ss01FileDate = fileDate;
+                    saveToIndexedDB(data, 'ss01Data');
+                    saveToIndexedDB(fileDate.toISOString(), 'ss01FileDate');
+                }
+
+                box.classList.add('loaded');
+
+                const now = new Date();
+                const diff = now - fileDate;
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+                // Age-based color class
+                let ageClass = 'age-normal';
+                if (days > 5) ageClass = 'age-critical';
+                else if (days > 2) ageClass = 'age-warning';
+
+                info.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div><strong>[OK] ${file.name}</strong></div>
+                        <button onclick="deleteReport('${type}')" title="حذف التقرير" 
+                                style="background:none; border:none; color:var(--accent-red); cursor:pointer; padding:4px;">
+                            <i data-lucide="trash-2" style="width:16px; height:16px;"></i>
+                        </button>
+                    </div>
+                    <div>تاريخ الملف: ${fileDate.toLocaleDateString('ar-SA')}</div>
+                    <div class="${ageClass}">عمر التقرير: ${days} يوم و ${hours} ساعة و ${minutes} دقيقة</div>
+                    <div>عدد السجلات: ${data.length}</div>
+                `;
+                info.classList.add('show');
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+                showToast('تم تحميل: ' + file.name, 'success');
+                updateStepClickability();
+            };
+            reader.readAsText(file);
+        }
+
+        // Delete individual report
+        function deleteReport(type) {
+            if (type === 'sf01') {
+                if (!confirm('هل أنت متأكد من حذف تقرير SF01؟\nسيتم إعادة تعيين جميع البيانات.')) return;
+
+                sf01Data = null;
+                sf01FileDate = null;
+                selectedCourses = [];
+                excludedInstructors = [];
+                selectedDepartment = null;
+                committeeDistribution = [];
+                committeeRooms = [];
+                roomsWithBuilding = [];
+                roomNames = [];
+                maxReachedStep = 1;
+                currentStep = 1;
+
+                // Clear from IndexedDB
+                clearSavedData('sf01Data');
+                clearSavedData('sf01FileDate');
+
+                // Reset UI
+                document.getElementById('sf01Box').classList.remove('loaded');
+                document.getElementById('sf01Info').innerHTML = '';
+                document.getElementById('sf01Info').classList.remove('show');
+                document.getElementById('sf01Input').value = '';
+
+                updateStepUI();
+                showToast('تم حذف تقرير SF01', 'info');
+
+            } else if (type === 'ss01') {
+                if (!confirm('هل أنت متأكد من حذف تقرير SS01؟')) return;
+
+                ss01Data = null;
+                ss01FileDate = null;
+                committeeRooms = [];
+                roomsWithBuilding = [];
+                roomNames = [];
+                selectedBuildings = [];
+
+                // Clear from IndexedDB
+                clearSavedData('ss01Data');
+                clearSavedData('ss01FileDate');
+
+                // Reset UI
+                document.getElementById('ss01Box').classList.remove('loaded');
+                document.getElementById('ss01Info').innerHTML = '';
+                document.getElementById('ss01Info').classList.remove('show');
+                document.getElementById('ss01Input').value = '';
+
+                showToast('تم حذف تقرير SS01', 'info');
+            }
+
+            updateStepClickability();
+        }
+
+        // Step Clickability
+
+        function canProceed() {
+            if (currentStep === 1) return sf01Data !== null;
+            if (currentStep === 2) {
+                if (unknownStatuses.length > 0) {
+                    showToast('يجب تصنيف جميع الحالات غير المعروفة أولاً', 'warning');
+                    return false;
+                }
+                return sf01Data !== null;
+            }
+            if (currentStep === 3) return selectedCourses.length > 0;
+            if (currentStep === 4) return getActiveInstructors().length > 0;
+            if (currentStep === 5) return committeeCount > 0;
+            if (currentStep === 6) return true;
+            if (currentStep === 7) return true;
+            return true;
+        }
+
+        function updateStepClickability() {
+            // Check if we can proceed to next step
+            const canGoNext = canProceed();
+
+            // Mark steps as clickable
+            document.querySelectorAll('.step').forEach((el, i) => {
+                const stepNum = i + 1;
+                // Clickable if: already reached, OR is next step and can proceed
+                if (stepNum <= maxReachedStep || (stepNum === currentStep + 1 && canGoNext)) {
+                    el.classList.add('clickable');
+                } else {
+                    el.classList.remove('clickable');
+                }
+            });
+        }
+
+        function goToStep(step) {
+            const stepEl = document.querySelector(`.step[data-step="${step}"]`);
+
+            // Allow clicking if: already clickable, is current step, or is next step and can proceed
+            const canClickNext = (step === currentStep + 1) && canProceed();
+            if (!stepEl.classList.contains('clickable') && step !== currentStep && !canClickNext) {
+                showToast('أكمل الخطوات السابقة أولاً', 'error');
+                return;
+            }
+
+            if (step > currentStep) {
+                while (currentStep < step) {
+                    if (!canProceed()) break;
+                    nextStep();
+                }
+            } else if (step < currentStep) {
+                currentStep = step;
+                updateStepUI();
+            }
+        }
+
+        // Navigation
+        function updateStepUI() {
+            document.querySelectorAll('.step').forEach((el, i) => {
+                el.classList.remove('active', 'completed');
+                if (i + 1 === currentStep) el.classList.add('active');
+                else if (i + 1 < currentStep) el.classList.add('completed');
+            });
+
+            document.querySelectorAll('.step-content').forEach((el, i) => {
+                el.classList.toggle('active', i + 1 === currentStep);
+            });
+
+            document.getElementById('prevBtn').disabled = currentStep === 1;
+            document.getElementById('nextBtn').textContent = currentStep === 7 ? 'إنهاء' : 'التالي ←';
+            updateStepClickability();
+
+            // Populate step-specific content (needed when navigating back via the steps bar)
+            if (currentStep === 4) populateStep4();
+            if (currentStep === 5) populateStep5();
+
+            // Scroll to top
+            window.scrollTo(0, 0);
+            document.querySelector('.wizard-content')?.scrollTo(0, 0);
+        }
+
+        function nextStep() {
+            if (currentStep === 1 && !sf01Data) {
+                showToast('يرجى رفع ملف SF01 أولاً', 'error');
+                return;
+            }
+            if (currentStep === 2) populateStep3();
+            if (currentStep === 3) {
+                if (selectedCourses.length === 0) { showToast('يرجى اختيار مقرر واحد على الأقل', 'error'); return; }
+                populateStep4();
+            }
+            if (currentStep === 4) {
+                if (getActiveInstructors().length === 0) { showToast('يرجى الإبقاء على مدرب واحد على الأقل', 'error'); return; }
+                populateStep5();
+            }
+            if (currentStep === 5) {
+                finalizeCommitteeCount();
+                populateStep6();
+            }
+            if (currentStep === 6) generateReports();
+
+            if (currentStep < 7) {
+                currentStep++;
+                maxReachedStep = Math.max(maxReachedStep, currentStep);
+                if (currentStep === 2) populateStep2();
+                updateStepUI();
+            } else if (currentStep === 7) {
+                // Show finish dialog
+                showFinishDialog();
+            }
+        }
+
+        function showFinishDialog() {
+            // Create modal overlay
+            const overlay = document.createElement('div');
+            overlay.id = 'finishDialog';
+            overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999;';
+
+            // Close when clicking outside the dialog
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    overlay.remove();
+                }
+            });
+
+            overlay.innerHTML = `
+                <div style="background:#1a1f2e; border-radius:16px; padding:40px; max-width:500px; width:90%; text-align:center; border:1px solid #2d3548; position:relative;">
+                    <!-- Close button -->
+                    <button onclick="document.getElementById('finishDialog').remove()" 
+                        style="position:absolute; top:15px; left:15px; background:transparent; border:none; color:#9ca3af; font-size:24px; cursor:pointer; width:30px; height:30px; display:flex; align-items:center; justify-content:center;"
+                        title="إغلاق">×</button>
+                    
+                    <p style="color:#f3f4f6; font-size:20px; font-weight:600; margin-bottom:30px;">ماذا تريد أن تفعل الآن؟</p>
+                    <div style="display:flex; flex-direction:column; gap:15px;">
+                        <button onclick="chooseAnotherCourse()" style="padding:15px 25px; border-radius:10px; border:2px solid #3b82f6; background:#3b82f6; color:white; font-size:16px; font-weight:600; cursor:pointer;">
+                            اختيار مقرر آخر
+                        </button>
+                        <button onclick="closeApp()" style="padding:15px 25px; border-radius:10px; border:2px solid #3b82f6; background:transparent; color:#3b82f6; font-size:16px; font-weight:600; cursor:pointer;">
+                            إنهاء التطبيق
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(overlay);
+        }
+
+        function chooseAnotherCourse() {
+            // Remove dialog
+            document.getElementById('finishDialog')?.remove();
+
+            // Reset selection and go to step 3
+            selectedCourses = [];
+            excludedInstructors = [];
+            committeeDistribution = []; // Reset distribution for new course
+            currentStep = 3;
+            populateStep3();
+            updateStepUI();
+            showToast('اختر مقرراً آخر', 'info');
+        }
+
+        function closeApp() {
+            // Try to close the window
+            window.close();
+            // If window.close() doesn't work (some browsers block it)
+            setTimeout(() => {
+                document.getElementById('finishDialog')?.remove();
+                showToast('لا يمكن إغلاق النافذة تلقائياً. يرجى إغلاقها يدوياً.', 'warning');
+            }, 500);
+        }
+
+        function showAboutModal() {
+            // Remove existing modal if any
+            document.getElementById('aboutModal')?.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'aboutModal';
+            modal.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999;';
+
+            modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+            modal.innerHTML = `
+                <div style="background:var(--bg-card); border-radius:20px; padding:30px; max-width:450px; width:90%; border:1px solid var(--border-dark); position:relative; text-align:center;">
+                    <!-- Close button -->
+                    <button onclick="document.getElementById('aboutModal').remove()" 
+                        style="position:absolute; top:12px; left:12px; background:transparent; border:none; color:var(--text-muted); font-size:24px; cursor:pointer; width:30px; height:30px; display:flex; align-items:center; justify-content:center;"
+                        title="إغلاق">×</button>
+                    
+                    <!-- App Icon -->
+                    <div style="width:70px; height:70px; background:linear-gradient(135deg, var(--accent-gold), #f59e0b); border-radius:16px; display:flex; align-items:center; justify-content:center; margin:0 auto 20px;">
+                        <i data-lucide="clipboard-list" style="width:36px; height:36px; color:#000;"></i>
+                    </div>
+                    
+                    <!-- App Name -->
+                    <h2 style="color:var(--text-light); font-size:22px; font-weight:700; margin:0 0 5px;">توزيع المتدربين على اللجان</h2>
+                    <p style="color:var(--accent-gold); font-size:13px; margin:0 0 20px;">الإصدار 3.3</p>
+                    
+                    <!-- Description -->
+                    <p style="color:var(--text-muted); font-size:13px; line-height:1.7; margin:0 0 20px;">
+                        أداة تساعد في توزيع المتدربين على لجان الاختبارات بشكل آلي ومنظم، مع إمكانية التحكم في عدد اللجان والقاعات وتصدير التقارير.
+                    </p>
+                    
+                    <!-- Features -->
+                    <div style="background:var(--bg-header); border-radius:12px; padding:15px; text-align:right; margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; color:var(--text-light); font-size:12px;">
+                            <span style="color:var(--accent-green);">✓</span> دعم اختيار عدة مقررات في نفس الوقت
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; color:var(--text-light); font-size:12px;">
+                            <span style="color:var(--accent-green);">✓</span> توزيع تلقائي مع إمكانية التعديل اليدوي
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; color:var(--text-light); font-size:12px;">
+                            <span style="color:var(--accent-green);">✓</span> تصدير للطباعة و Excel
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px; color:var(--text-light); font-size:12px;">
+                            <span style="color:var(--accent-green);">✓</span> حفظ تلقائي للبيانات
+                        </div>
+                    </div>
+                    
+                    <!-- Developer & Reviewer -->
+                    <div style="border-top:1px solid var(--border-dark); padding-top:15px; display:flex; justify-content:center; gap:40px;">
+                        <div style="text-align:center;">
+                            <p style="color:var(--text-muted); font-size:11px; margin:0;">تطوير</p>
+                            <p style="color:var(--text-light); font-size:14px; font-weight:600; margin:5px 0 0;">م. محمد يوسف الشبيلي</p>
+                        </div>
+                        <div style="text-align:center;">
+                            <p style="color:var(--text-muted); font-size:11px; margin:0;">اختبار ومقترحات التحسين</p>
+                            <p style="color:var(--text-light); font-size:14px; font-weight:600; margin:5px 0 0;">أ. منصور عبدالعزيز الفايز</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+
+            // Reinitialize Lucide icons for the modal
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        function previousStep() {
+            if (currentStep > 1) {
+                currentStep--;
+                updateStepUI();
+            }
+        }
+
+        // Step 2: Departments and Status Filter
+        function populateStep2() {
+            const departments = [...new Set(sf01Data.map(r => r['القسم']).filter(Boolean))];
+            const hasGeneralStudies = departments.some(d => d.includes('الدراسات العامة'));
+
+            let alertHtml = '';
+            if (!hasGeneralStudies) {
+                alertHtml = `<div class="alert error">لم يتم تنزيل كامل التقرير SF01. قم بتنزيل التقرير من جديد مع التأكد من اختيار جميع الأقسام والتخصصات.</div>`;
+            }
+            document.getElementById('validationAlert').innerHTML = alertHtml;
+
+            document.getElementById('departmentsList').innerHTML = departments.map(d =>
+                `<span style="background:var(--bg-header); padding:5px 12px; border-radius:15px; font-size:12px;">${d}</span>`
+            ).join('');
+
+            // Populate status filter for all courses
+            populateStatusFilterAll();
+        }
+
+        async function populateStatusFilterAll() {
+            if (!sf01Data) return;
+
+            allStatuses = {};
+
+            sf01Data.forEach(t => {
+                const status = t['حالة تسجيل'] || 'غير محدد';
+                allStatuses[status] = (allStatuses[status] || 0) + 1;
+            });
+
+            // Classify statuses into 3 categories
+            const statusNames = Object.keys(allStatuses);
+
+            // Try to load saved classifications
+            const savedClassifications = await loadFromIndexedDB('userStatusClassifications');
+            const userIncluded = savedClassifications?.rawData?.included || [];
+            const userExcluded = savedClassifications?.rawData?.excluded || [];
+
+            // Merge: user classifications take priority, then defaults
+            includedStatuses = statusNames.filter(s =>
+                userIncluded.includes(s) ||
+                (defaultIncludedStatuses.includes(s) && !userExcluded.includes(s))
+            );
+            excludedStatuses = statusNames.filter(s =>
+                userExcluded.includes(s) ||
+                (defaultExcludedStatuses.includes(s) && !userIncluded.includes(s))
+            );
+            unknownStatuses = statusNames.filter(s =>
+                !includedStatuses.includes(s) && !excludedStatuses.includes(s)
+            );
+
+            renderStatusLists();
+            updateStatusSummary();
+        }
+
+        // Save status classifications to IndexedDB
+        function saveStatusClassifications() {
+            saveToIndexedDB({
+                included: includedStatuses,
+                excluded: excludedStatuses
+            }, 'userStatusClassifications');
+        }
+
+        // Step 3: Course Selection
+        function populateStep3() {
+            const departments = [...new Set(sf01Data.map(r => r['القسم']).filter(Boolean))];
+            const container = document.getElementById('departmentButtons');
+
+            // Calculate course count per department
+            const deptCourseCounts = {};
+            departments.forEach(dept => {
+                const deptCourses = sf01Data.filter(r =>
+                    r['القسم'] === dept &&
+                    parseInt(r['الساعات المعتمدة'] || '0') > 0 &&
+                    r['نوع الجدولة'] !== 'عملي صباحي'
+                );
+                // Count unique course+scheduleType combinations
+                const uniqueCourses = new Set(deptCourses.map(r => `${r['المقرر']}|${r['نوع الجدولة']}`));
+                deptCourseCounts[dept] = uniqueCourses.size;
+            });
+
+            container.innerHTML = departments.map(d => `
+                <button class="dept-btn ${selectedDepartment === d ? 'active' : ''}" 
+                        onclick="selectDepartment('${d}')"
+                        style="padding: 12px 20px; border-radius: 10px; border: 1px solid var(--border-dark); 
+                               background: ${selectedDepartment === d ? 'var(--accent-blue)' : 'var(--bg-card)'}; 
+                               color: ${selectedDepartment === d ? '#fff' : 'var(--text-light)'}; 
+                               cursor: pointer; font-family: inherit; font-size: 14px; font-weight: 600;
+                               transition: all 0.2s ease; display: flex; align-items: center; gap: 8px;">
+                    <i data-lucide="building" style="width:16px; height:16px;"></i>
+                    ${d}
+                    <span style="background: ${selectedDepartment === d ? 'rgba(255,255,255,0.2)' : 'var(--accent-gold)'}; 
+                                 color: ${selectedDepartment === d ? '#fff' : '#000'}; 
+                                 padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700;
+                                 min-width: 24px; text-align: center;">${deptCourseCounts[d]}</span>
+                </button>
+            `).join('');
+
+            // Reinitialize Lucide icons for new buttons
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+
+            document.getElementById('courseFilter').oninput = renderCourses;
+
+            // If department was already selected (persisted), render its courses
+            if (selectedDepartment) {
+                renderCourses();
+                updateSelectedCoursesChipBar();
+            }
+        }
+
+        function selectDepartment(dept) {
+            selectedDepartment = dept;
+            // Don't clear selectedCourses - keep them unless explicitly removed
+            saveCourseSelection();
+            populateStep3(); // Re-render buttons to show active state
+            renderCourses();
+            updateSelectedCoursesChipBar();
+        }
+
+        // Save course selection to IndexedDB
+        function saveCourseSelection() {
+            saveToIndexedDB({
+                department: selectedDepartment,
+                courses: selectedCourses
+            }, 'userCourseSelection');
+        }
+
+        // Generate unique color for each schedule type based on string hash
+        function getScheduleTypeColor(text) {
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = text.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            // Use HSL for vibrant colors with good contrast
+            const hue = Math.abs(hash % 360);
+            return `hsl(${hue}, 70%, 45%)`;
+        }
+
+        function renderCourses() {
+            const filter = document.getElementById('courseFilter').value.toLowerCase();
+
+            // Check if there are practical courses to show alert
+            const hasPracticalCourses = sf01Data.some(r =>
+                r['القسم'] === selectedDepartment && r['نوع الجدولة'] === 'عملي صباحي'
+            );
+
+            // Filter by department AND exclude courses with 0 credit hours AND exclude practical courses
+            let filtered = sf01Data.filter(r =>
+                r['القسم'] === selectedDepartment &&
+                parseInt(r['الساعات المعتمدة'] || '0') > 0 &&
+                r['نوع الجدولة'] !== 'عملي صباحي'
+            );
+
+            // Group by course code + schedule type (unique key)
+            const courses = {};
+            filtered.forEach(r => {
+                const code = r['المقرر'] || '';
+                const name = r['اسم المقرر'] || '';
+                const scheduleType = r['نوع الجدولة'] || 'غير محدد';
+                const status = r['حالة تسجيل'] || 'غير محدد';
+                const key = `${code}|${scheduleType}`; // Unique key per course+scheduleType
+
+                if (!courses[key]) courses[key] = { code, name, scheduleType, count: 0, totalCount: 0 };
+                courses[key].totalCount++;
+
+                // Only count if status is in included list
+                if (includedStatuses.includes(status)) {
+                    courses[key].count++;
+                }
+            });
+
+            let courseList = Object.values(courses);
+
+            // Filter by text search
+            if (filter) {
+                courseList = courseList.filter(c =>
+                    c.code.toLowerCase().includes(filter) ||
+                    c.name.toLowerCase().includes(filter) ||
+                    c.scheduleType.toLowerCase().includes(filter)
+                );
+            }
+
+            // Sort by code then schedule type
+            courseList.sort((a, b) => a.code.localeCompare(b.code) || a.scheduleType.localeCompare(b.scheduleType));
+
+            // Separate selected and unselected courses
+            const selectedList = courseList.filter(c => selectedCourses.includes(`${c.code}|${c.scheduleType}`));
+            const unselectedList = courseList.filter(c => !selectedCourses.includes(`${c.code}|${c.scheduleType}`));
+
+            // Build HTML
+            let html = '';
+
+            // Practical courses note is now in the HTML header, no need to show warning here
+
+            // Selected courses section (at top)
+            if (selectedList.length > 0) {
+                html += `
+                    <div style="background:rgba(16, 185, 129, 0.1); border:1px solid var(--accent-green); border-radius:12px; padding:12px; margin-bottom:15px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                            <span style="color:var(--accent-green); font-weight:600; font-size:14px;">
+                                ✓ المقررات المختارة (${selectedList.length})
+                            </span>
+                            ${selectedList.length > 1 ? `
+                                <button onclick="clearAllSelectedCourses()" 
+                                    style="background:rgba(239,68,68,0.15); color:#ef4444; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:12px; font-family:inherit; display:flex; align-items:center; gap:4px;">
+                                    <span style="font-weight:700;">✕</span> إزالة الكل
+                                </button>
+                            ` : ''}
+                        </div>
+                        ${selectedList.map(c => {
+                    const key = `${c.code}|${c.scheduleType}`;
+                    return `
+                            <div class="course-item selected" style="background:rgba(16, 185, 129, 0.15); border-color:var(--accent-green); margin-bottom:8px;" onclick="toggleCourse('${key}', ${c.count})">
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <span style="color:var(--accent-green); font-size:18px;">✓</span>
+                                    <span class="course-code">${c.code}</span> - 
+                                    <span class="course-name">${c.name}</span>
+                                    <span style="background:${getScheduleTypeColor(c.scheduleType)}; color:#fff; padding:2px 8px; border-radius:10px; font-size:10px;">${c.scheduleType}</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <span class="course-count" style="color:var(--accent-gold); font-weight:700;">${c.count}</span>
+                                    <span onclick="event.stopPropagation(); toggleCourse('${key}', ${c.count})" 
+                                          style="background:rgba(239,68,68,0.2); color:#ef4444; padding:4px 8px; border-radius:4px; cursor:pointer; font-weight:700;">✕</span>
+                                </div>
+                            </div>`;
+                }).join('')}
+                    </div>
+                `;
+            }
+
+            // Unselected courses section
+            html += unselectedList.length ?
+                unselectedList.map(c => {
+                    const key = `${c.code}|${c.scheduleType}`;
+                    return `
+                    <div class="course-item" onclick="toggleCourse('${key}', ${c.count})">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <input type="checkbox" onclick="event.stopPropagation(); toggleCourse('${key}', ${c.count})" style="width:16px; height:16px;">
+                            <span class="course-code">${c.code}</span> - 
+                            <span class="course-name">${c.name}</span>
+                            <span style="background:${getScheduleTypeColor(c.scheduleType)}; color:#fff; padding:2px 8px; border-radius:10px; font-size:10px;">${c.scheduleType}</span>
+                        </div>
+                        <span class="course-count">${c.count}${c.count !== c.totalCount ? ` <small style="opacity:0.6">(من ${c.totalCount})</small>` : ''}</span>
+                    </div>
+                `}).join('') : (selectedList.length === 0 ? '<div style="padding:20px; text-align:center; color:var(--text-muted);">لا توجد مقررات</div>' : '');
+
+            document.getElementById('courseList').innerHTML = html;
+
+            // Update selected count
+            updateSelectedCoursesCount();
+        }
+
+        function updateSelectedCoursesCount() {
+            // Calculate total trainees for selected courses
+            let totalCount = 0;
+            selectedCourses.forEach(key => {
+                const [code, scheduleType] = key.split('|');
+                const count = sf01Data.filter(r =>
+                    r['المقرر'] === code &&
+                    r['نوع الجدولة'] === scheduleType &&
+                    includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد')
+                ).length;
+                totalCount += count;
+            });
+            selectedCourseTraineeCount = totalCount;
+
+            // Update step clickability based on new selection
+            updateStepClickability();
+        }
+
+        function toggleCourse(key, count) {
+            const idx = selectedCourses.indexOf(key);
+            if (idx === -1) {
+                selectedCourses.push(key);
+            } else {
+                selectedCourses.splice(idx, 1);
+            }
+            saveCourseSelection();
+            renderCourses();
+            updateSelectedCoursesChipBar();
+        }
+
+        function clearAllSelectedCourses() {
+            selectedCourses = [];
+            saveCourseSelection();
+            renderCourses();
+            updateSelectedCoursesChipBar();
+        }
+
+        function removeCourseFromSelection(key) {
+            selectedCourses = selectedCourses.filter(k => k !== key);
+            saveCourseSelection();
+            renderCourses();
+            updateSelectedCoursesChipBar();
+        }
+
+        function updateSelectedCoursesChipBar() {
+            const chipBar = document.getElementById('selectedCoursesChipBar');
+            const chipsContainer = document.getElementById('selectedCoursesChips');
+            const countSpan = document.getElementById('selectedCoursesCount');
+            const clearAllBtn = document.getElementById('clearAllCoursesBtn');
+
+            if (!chipBar || !chipsContainer) return;
+
+            if (selectedCourses.length === 0) {
+                chipBar.style.display = 'none';
+                return;
+            }
+
+            chipBar.style.display = 'block';
+            countSpan.textContent = selectedCourses.length;
+            clearAllBtn.style.display = selectedCourses.length > 1 ? 'inline-flex' : 'none';
+
+            chipsContainer.innerHTML = selectedCourses.map(key => {
+                const [code, scheduleType] = key.split('|');
+                const course = sf01Data.find(r => r['المقرر'] === code);
+                const name = course ? course['اسم المقرر'] : '';
+                const courseCount = sf01Data.filter(r =>
+                    r['المقرر'] === code &&
+                    r['نوع الجدولة'] === scheduleType &&
+                    includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد')
+                ).length;
+                return `
+                    <span style="background:var(--accent-green); color:#fff; padding:4px 8px; border-radius:6px; font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                        ${code} (${courseCount})
+                        <span onclick="removeCourseFromSelection('${key}')" 
+                              style="cursor:pointer; background:rgba(255,255,255,0.2); padding:2px 4px; border-radius:4px; font-weight:700;">✕</span>
+                    </span>
+                `;
+            }).join('');
+
+            // Reinitialize Lucide icons
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+
+
+        function switchCommitteeMode(mode) {
+            committeeMode = mode;
+            document.getElementById('optionByRooms').classList.toggle('active', mode === 'rooms');
+            document.getElementById('optionByTrainees').classList.toggle('active', mode === 'trainees');
+            updateCommitteeCalc();
+            saveCommitteeSettings();
+        }
+
+        function updateCommitteeCalc(skipSave = false) {
+            const n = selectedCourseTraineeCount;
+
+            if (committeeMode === 'rooms') {
+                let rooms = parseInt(document.getElementById('committeeCount').value) || 0;
+                // Enforce minimum of 1
+                if (rooms < 1) {
+                    rooms = 1;
+                    document.getElementById('committeeCount').value = 1;
+                }
+                const perRoom = Math.ceil(n / rooms);
+                document.getElementById('traineesPerRoomResult').textContent = `≈ ${perRoom} متدرب لكل لجنة`;
+                document.getElementById('roomsNeededResult').textContent = '';
+
+                // Update committeeCount for saving
+                committeeCount = rooms;
+            } else {
+                let perRoom = parseInt(document.getElementById('traineesPerRoom').value) || 0;
+                // Enforce minimum of 1
+                if (perRoom < 1) {
+                    perRoom = 1;
+                    document.getElementById('traineesPerRoom').value = 1;
+                }
+                const rooms = Math.ceil(n / perRoom);
+                document.getElementById('roomsNeededResult').textContent = `= ${rooms} لجنة مطلوبة`;
+                document.getElementById('traineesPerRoomResult').textContent = '';
+
+                // Update traineesPerCommittee for saving
+                traineesPerCommittee = perRoom;
+            }
+
+            // Auto-save settings (unless skipped)
+            if (!skipSave) {
+                saveCommitteeSettings();
+            }
+        }
+
+        function finalizeCommitteeCount() {
+            if (committeeMode === 'rooms') {
+                committeeCount = parseInt(document.getElementById('committeeCount').value) || 1;
+            } else {
+                traineesPerCommittee = parseInt(document.getElementById('traineesPerRoom').value) || 30;
+                committeeCount = Math.ceil(selectedCourseTraineeCount / traineesPerCommittee);
+            }
+            // Reset distribution for new committee count
+            committeeDistribution = [];
+            // Save committee settings
+            saveCommitteeSettings();
+        }
+
+        // Save committee settings to IndexedDB
+        function saveCommitteeSettings() {
+            saveToIndexedDB({
+                committeeMode: committeeMode,
+                traineesPerCommittee: traineesPerCommittee,
+                committeeCount: committeeCount
+            }, 'userCommitteeSettings');
+        }
+
+        // Status Filter Functions
+
+        function renderStatusLists() {
+            const includedContainer = document.getElementById('includedStatusesStep2');
+            const excludedContainer = document.getElementById('excludedStatusesStep2');
+
+            if (!includedContainer || !excludedContainer) return;
+
+            includedContainer.innerHTML = includedStatuses.map(s => `
+                <div class="status-item ${selectedStatusItem === s ? 'selected' : ''}" 
+                     onclick="selectStatus('${s}', 'included')">
+                    <span>${s}</span>
+                    <span class="count">${allStatuses[s] || 0}</span>
+                </div>
+            `).join('') || '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px;">لا توجد حالات</div>';
+
+            excludedContainer.innerHTML = excludedStatuses.map(s => `
+                <div class="status-item ${selectedStatusItem === s ? 'selected' : ''}" 
+                     onclick="selectStatus('${s}', 'excluded')">
+                    <span>${s}</span>
+                    <span class="count">${allStatuses[s] || 0}</span>
+                </div>
+            `).join('') || '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px;">لا توجد حالات</div>';
+
+            // Render unknown statuses
+            const unknownContainer = document.getElementById('unknownStatusesList');
+            const unknownSection = document.getElementById('unknownStatusesSection');
+
+            if (unknownContainer && unknownSection) {
+                if (unknownStatuses.length > 0) {
+                    unknownSection.style.display = 'block';
+                    unknownContainer.innerHTML = unknownStatuses.map(s => `
+                        <div class="status-item ${selectedStatusItem === s ? 'selected' : ''}" 
+                             onclick="selectStatus('${s}', 'unknown')" style="border-right-color: #f59e0b;">
+                            <span>${s}</span>
+                            <span class="count">${allStatuses[s] || 0}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    unknownSection.style.display = 'none';
+                }
+            }
+        }
+
+        function selectStatus(status, list) {
+            selectedStatusItem = selectedStatusItem === status ? null : status;
+            renderStatusLists();
+        }
+
+        // Classify selected unknown status as included
+        function classifyUnknownAsIncluded() {
+            if (!selectedStatusItem || !unknownStatuses.includes(selectedStatusItem)) {
+                showToast('اختر حالة غير معروفة أولاً', 'error');
+                return;
+            }
+            unknownStatuses = unknownStatuses.filter(s => s !== selectedStatusItem);
+            includedStatuses.push(selectedStatusItem);
+            selectedStatusItem = null;
+            renderStatusLists();
+            updateStatusSummary();
+            saveStatusClassifications();
+            showToast('تم إضافة الحالة للمسموحة', 'success');
+        }
+
+        // Classify selected unknown status as excluded
+        function classifyUnknownAsExcluded() {
+            if (!selectedStatusItem || !unknownStatuses.includes(selectedStatusItem)) {
+                showToast('اختر حالة غير معروفة أولاً', 'error');
+                return;
+            }
+            unknownStatuses = unknownStatuses.filter(s => s !== selectedStatusItem);
+            excludedStatuses.push(selectedStatusItem);
+            selectedStatusItem = null;
+            renderStatusLists();
+            updateStatusSummary();
+            saveStatusClassifications();
+            showToast('تم إضافة الحالة للمستبعدة', 'success');
+        }
+
+        function transferStatus(direction) {
+            if (!selectedStatusItem) {
+                showToast('اختر حالة أولاً', 'error');
+                return;
+            }
+
+            if (direction === 'exclude') {
+                if (includedStatuses.includes(selectedStatusItem)) {
+                    includedStatuses = includedStatuses.filter(s => s !== selectedStatusItem);
+                    excludedStatuses.push(selectedStatusItem);
+                }
+            } else {
+                if (excludedStatuses.includes(selectedStatusItem)) {
+                    excludedStatuses = excludedStatuses.filter(s => s !== selectedStatusItem);
+                    includedStatuses.push(selectedStatusItem);
+                }
+            }
+
+            selectedStatusItem = null;
+            renderStatusLists();
+            updateStatusSummary();
+            saveStatusClassifications();
+        }
+
+        function updateStatusSummary() {
+            const total = Object.values(allStatuses).reduce((a, b) => a + b, 0);
+            const included = includedStatuses.reduce((sum, s) => sum + (allStatuses[s] || 0), 0);
+            const excluded = excludedStatuses.reduce((sum, s) => sum + (allStatuses[s] || 0), 0);
+            const unknown = unknownStatuses.reduce((sum, s) => sum + (allStatuses[s] || 0), 0);
+
+            // Enhanced styled summary
+            const styledEl = document.getElementById('statusSummaryStyled');
+            if (styledEl) {
+                styledEl.innerHTML = `
+                    <div style="display:flex; justify-content:space-around; text-align:center; flex-wrap:wrap; gap:15px;">
+                        <div style="padding:10px 20px;">
+                            <div style="font-size:24px; font-weight:700; color:var(--text-light);">${total.toLocaleString()}</div>
+                            <div style="font-size:14px; color:var(--text-muted);">إجمالي السجلات</div>
+                        </div>
+                        <div style="padding:10px 20px; background:rgba(16, 185, 129, 0.15); border-radius:10px;">
+                            <div style="font-size:24px; font-weight:700; color:#10b981;">${included.toLocaleString()}</div>
+                            <div style="font-size:12px; color:#10b981;">سيظهر في الكشوف</div>
+                        </div>
+                        <div style="padding:10px 20px; background:rgba(239, 68, 68, 0.15); border-radius:10px;">
+                            <div style="font-size:24px; font-weight:700; color:#ef4444;">${excluded.toLocaleString()}</div>
+                            <div style="font-size:12px; color:#ef4444;">مستبعد</div>
+                        </div>
+                        ${unknown > 0 ? `
+                        <div style="padding:10px 20px; background:rgba(245, 158, 11, 0.15); border-radius:10px;">
+                            <div style="font-size:24px; font-weight:700; color:#f59e0b;">${unknown.toLocaleString()}</div>
+                            <div style="font-size:12px; color:#f59e0b;">غير مصنف</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            // Also update the small summary below status lists
+            const summaryEl = document.getElementById('statusSummaryStep2');
+            if (summaryEl) {
+                summaryEl.innerHTML = unknown > 0
+                    ? `<span style="color:#f59e0b; font-weight:600;">يوجد ${unknown} متدرب غير مصنف - يجب تصنيف الحالات قبل المتابعة</span>`
+                    : '';
+            }
+        }
+
+        function updateStatusFilter() {
+            sortOrder = document.querySelector('input[name="sortOrder"]:checked')?.value || 'traineeId';
+        }
+
+        // ===== Step 4: Instructor Selection =====
+        const INSTRUCTOR_UNSPECIFIED = 'غير محدد';
+
+        // Normalize an instructor cell: blank/whitespace becomes the "unspecified" pseudo-instructor
+        function normalizeInstructor(v) {
+            const s = (v == null ? '' : String(v)).trim();
+            return s === '' ? INSTRUCTOR_UNSPECIFIED : s;
+        }
+
+        // Escape a value so it is safe inside onclick="fn('...')"
+        function escInstructor(s) {
+            return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
+
+        // {name, count} per distinct instructor across the selected courses (respecting status filter)
+        function getCourseInstructorCounts() {
+            const counts = new Map();
+            selectedCourses.forEach(key => {
+                const [code, scheduleType] = key.split('|');
+                sf01Data
+                    .filter(r =>
+                        r['المقرر'] === code &&
+                        r['نوع الجدولة'] === scheduleType &&
+                        includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد'))
+                    .forEach(r => {
+                        const name = normalizeInstructor(r['المدرب']);
+                        counts.set(name, (counts.get(name) || 0) + 1);
+                    });
+            });
+            return [...counts.entries()]
+                .map(([name, count]) => ({ name, count }))
+                .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+        }
+
+        // All instructor names available for the current course selection
+        function getAllInstructors() {
+            return getCourseInstructorCounts().map(i => i.name);
+        }
+
+        // Instructors currently kept (available minus the ones the user excluded)
+        function getActiveInstructors() {
+            return getAllInstructors().filter(name => !excludedInstructors.includes(name));
+        }
+
+        // Row-level filter shared by preview / committee / reports
+        function isInstructorIncluded(r) {
+            if (!excludedInstructors.length) return true;
+            return !excludedInstructors.includes(normalizeInstructor(r['المدرب']));
+        }
+
+        // True when the report should drop the instructor column and show the name in the header
+        function isSingleInstructor() {
+            return getActiveInstructors().length === 1;
+        }
+
+        function populateStep4() {
+            // Drop any exclusions that no longer exist for the current course selection
+            const all = getAllInstructors();
+            excludedInstructors = excludedInstructors.filter(name => all.includes(name));
+            const filterInput = document.getElementById('instructorFilter');
+            if (filterInput) filterInput.oninput = renderInstructors;
+            renderInstructors();
+        }
+
+        function renderInstructors() {
+            const listEl = document.getElementById('instructorsList');
+            if (!listEl) return;
+
+            const instructors = getCourseInstructorCounts();
+            const filterText = (document.getElementById('instructorFilter')?.value || '').toLowerCase();
+            const filtered = filterText
+                ? instructors.filter(i => i.name.toLowerCase().includes(filterText))
+                : instructors;
+
+            // Summary bar
+            const summaryBar = document.getElementById('instructorSummaryBar');
+            const total = instructors.length;
+            const includedCount = instructors.filter(i => !excludedInstructors.includes(i.name)).length;
+            if (summaryBar) {
+                summaryBar.style.display = total > 0 ? 'block' : 'none';
+                document.getElementById('instructorIncludedCount').textContent = includedCount;
+                document.getElementById('instructorTotalCount').textContent = total;
+                document.getElementById('resetInstructorsBtn').style.display =
+                    excludedInstructors.length > 0 ? 'inline-flex' : 'none';
+            }
+
+            if (total === 0) {
+                listEl.innerHTML = `<div style="color:var(--text-muted); padding:20px; text-align:center; width:100%;">لا يوجد مدربون للمقررات المختارة.</div>`;
+                return;
+            }
+
+            listEl.innerHTML = filtered.map(i => {
+                const excluded = excludedInstructors.includes(i.name);
+                return `
+                    <div onclick="toggleInstructor('${escInstructor(i.name)}')"
+                         style="cursor:pointer; user-select:none; display:inline-flex; align-items:center; gap:8px; padding:10px 14px; border-radius:10px;
+                                border:1px solid ${excluded ? 'var(--border-dark)' : 'var(--accent-green)'};
+                                background:${excluded ? 'var(--bg-header)' : 'rgba(16,185,129,0.12)'};
+                                opacity:${excluded ? '0.55' : '1'}; transition:all 0.15s ease;">
+                        <i data-lucide="${excluded ? 'user-x' : 'user-check'}" style="width:16px; height:16px; color:${excluded ? 'var(--text-muted)' : 'var(--accent-green)'};"></i>
+                        <span style="color:var(--text-light); font-weight:600; font-size:13px; ${excluded ? 'text-decoration:line-through;' : ''}">${i.name}</span>
+                        <span style="background:${excluded ? 'var(--border-dark)' : 'var(--accent-gold)'}; color:${excluded ? 'var(--text-muted)' : '#000'}; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;">${i.count}</span>
+                    </div>`;
+            }).join('');
+
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        function toggleInstructor(name) {
+            const idx = excludedInstructors.indexOf(name);
+            if (idx === -1) {
+                // Keep at least one instructor active
+                if (getActiveInstructors().length <= 1) {
+                    showToast('يجب الإبقاء على مدرب واحد على الأقل', 'warning');
+                    return;
+                }
+                excludedInstructors.push(name);
+            } else {
+                excludedInstructors.splice(idx, 1);
+            }
+            // The included population changed -> rebuild committee distribution downstream
+            committeeDistribution = [];
+            renderInstructors();
+            updateStepClickability();
+        }
+
+        function resetInstructors() {
+            excludedInstructors = [];
+            committeeDistribution = [];
+            renderInstructors();
+            updateStepClickability();
+        }
+
+        // Step 5: Committee Count
+        function populateStep5() {
+            // Calculate total trainees for selected courses (after instructor filter)
+            let totalTrainees = 0;
+            selectedCourses.forEach(key => {
+                const [code, scheduleType] = key.split('|');
+                const count = sf01Data.filter(r =>
+                    r['المقرر'] === code &&
+                    r['نوع الجدولة'] === scheduleType &&
+                    includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد') &&
+                    isInstructorIncluded(r)
+                ).length;
+                totalTrainees += count;
+            });
+            selectedCourseTraineeCount = totalTrainees;
+
+            // Show selected courses summary with trainee counts
+            const summaryEl = document.getElementById('selectedCoursesSummary');
+            const coursesList = selectedCourses.map(key => {
+                const [code, scheduleType] = key.split('|');
+                const course = sf01Data.find(r => r['المقرر'] === code);
+                const name = course ? course['اسم المقرر'] : '';
+                // Get count for this specific course
+                const courseCount = sf01Data.filter(r =>
+                    r['المقرر'] === code &&
+                    r['نوع الجدولة'] === scheduleType &&
+                    includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد') &&
+                    isInstructorIncluded(r)
+                ).length;
+                const scheduleColor = getScheduleTypeColor(scheduleType);
+                return `
+                    <div style="background:var(--bg-header); border:1px solid var(--border-dark); padding:8px 12px; border-radius:8px; display:inline-flex; flex-direction:column; gap:4px;">
+                        <div style="font-weight:600; color:var(--text-light);">${code} - ${name}</div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="background:${scheduleColor}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">${scheduleType}</span>
+                            <span style="background:var(--accent-gold); color:#000; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:700;">${courseCount} متدرب</span>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            summaryEl.innerHTML = `
+                <div style="color:var(--text-light); margin-bottom:10px;">
+                    <strong>المقررات المختارة:</strong>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:15px;">
+                    ${coursesList}
+                </div>
+                <div style="display:flex; justify-content:center; gap:20px; padding:15px; background:var(--bg-header); border-radius:10px;">
+                    <div style="text-align:center;">
+                        <div style="font-size:28px; font-weight:700; color:var(--accent-gold);">${totalTrainees}</div>
+                        <div style="font-size:12px; color:var(--text-muted);">إجمالي المتدربين</div>
+                    </div>
+                </div>
+            `;
+
+            updateCommitteeCalc();
+
+            // Reinitialize Lucide icons
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        // Track last committee count for step 5
+        let step6LastCommitteeCount = 0;
+
+        // Save room data to IndexedDB
+        function saveRoomData() {
+            saveToIndexedDB({
+                roomNames,
+                roomsWithBuilding,
+                committeeRooms,
+                selectedBuildings,
+                committeeCount
+            }, 'userRoomData');
+        }
+
+        // Clear all room data
+        function clearAllRoomData() {
+            if (!confirm('هل أنت متأكد من إزالة جميع القاعات المحفوظة؟')) return;
+            roomNames = [];
+            roomsWithBuilding = [];
+            selectedBuildings = [];
+            committeeRooms = new Array(committeeCount).fill(null);
+            committeeDistribution = [];
+            clearSavedData('userRoomData');
+            populateStep6();
+            showToast('تم إزالة جميع القاعات', 'info');
+        }
+
+        // Step 6: Room Distribution
+        function populateStep6() {
+            const container = document.getElementById('roomSelectionMode');
+
+            // Only reset if committeeCount changed AND no saved room data exists
+            if (committeeCount !== step6LastCommitteeCount) {
+                // Check if we have saved data to preserve
+                if (roomsWithBuilding.length === 0) {
+                    committeeRooms = new Array(committeeCount).fill(null);
+                    committeeDistribution = [];
+                } else {
+                    // Adjust committeeRooms array size to match new committeeCount
+                    if (committeeRooms.length < committeeCount) {
+                        // Add null slots for new committees
+                        while (committeeRooms.length < committeeCount) {
+                            committeeRooms.push(null);
+                        }
+                    } else if (committeeRooms.length > committeeCount) {
+                        // Trim excess slots
+                        committeeRooms = committeeRooms.slice(0, committeeCount);
+                    }
+                }
+                step6LastCommitteeCount = committeeCount;
+            }
+
+            if (ss01Data && ss01Data.length) {
+                // Get buildings with room counts
+                const buildingsData = {};
+                ss01Data.forEach(r => {
+                    const b = r['مبنى'];
+                    if (b) {
+                        if (!buildingsData[b]) buildingsData[b] = new Set();
+                        if (r['قاعة']) buildingsData[b].add(r['قاعة']);
+                    }
+                });
+
+                const buildings = Object.entries(buildingsData).map(([name, rooms]) => ({
+                    name,
+                    count: rooms.size,
+                    colorIndex: Object.keys(buildingsData).indexOf(name) % buildingColors.length
+                }));
+
+                container.innerHTML = `
+                    <!-- Main Title Banner -->
+                    <div style="background:linear-gradient(135deg, rgba(251, 191, 36, 0.25), rgba(245, 158, 11, 0.25)); border:1px solid rgba(251, 191, 36, 0.5); border-radius:10px; padding:14px 18px; margin-bottom:12px; display:flex; align-items:center; justify-content:center; gap:10px;">
+                        <i data-lucide="info" style="width:24px; height:24px; color:var(--accent-gold); flex-shrink:0;"></i>
+                        <span style="font-size:16px; font-weight:700; color:var(--accent-gold);">طريقتان لإضافة القاعات</span>
+                    </div>
+                    
+                    <!-- Method 1 Banner -->
+                    <div style="background:rgba(251, 191, 36, 0.1); border:1px solid rgba(251, 191, 36, 0.3); border-radius:8px; padding:10px 15px; margin-bottom:15px; display:flex; align-items:center; gap:10px;">
+                        <span style="background:var(--accent-gold); color:#000; padding:2px 8px; border-radius:4px; font-weight:700; font-size:12px;">1</span>
+                        <span style="font-size:13px; color:var(--text-light);">الطريقة الأولى: اختر المبنى/المباني ثم اختر القاعات</span>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                            <i data-lucide="building" style="width:18px; height:18px;"></i> اختر المباني (يمكنك اختيار أكثر من مبنى):
+                        </label>
+                        <div class="buildings-container" id="buildingsContainer">
+                            ${buildings.map((b, i) => `
+                                <div class="building-card" data-building="${b.name}" data-color-index="${i % buildingColors.length}"
+                                     onclick="toggleBuilding('${b.name}')"
+                                     style="border-color: ${buildingColors[i % buildingColors.length]}30;">
+                                    <div class="name">${b.name}</div>
+                                    <div class="count">${b.count} قاعة</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    
+                    <div class="room-status" id="roomStatus" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>تم اختيار: <span class="count" id="selectedCount">${roomsWithBuilding.length}</span> من <span class="count">${committeeCount}</span> قاعة</span>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span id="remainingText"></span>
+                            ${roomsWithBuilding.length > 0 ? `
+                                <button onclick="clearAllRoomData()" style="background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid #ef4444; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:4px;">
+                                    <i data-lucide="trash-2" style="width:14px; height:14px;"></i> مسح الكل
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">ابحث في القاعات:</label>
+                        <input type="text" class="form-input room-search" id="roomSearch" placeholder="اكتب للبحث..." oninput="filterRooms()">
+                    </div>
+                    
+                    <div class="room-grid" id="roomGrid"></div>
+                    
+                    <div id="maxReachedAlert" class="alert info" style="display:none;">تم اختيار العدد المطلوب من القاعات (${committeeCount})</div>
+                    
+                    <!-- Method 2 Section - Styled with gold -->
+                    <div style="margin-top:20px; padding-top:20px; border-top:2px dashed rgba(251, 191, 36, 0.3);">
+                        <div onclick="toggleManualRoomSection()" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; padding:12px 15px; background:linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(245, 158, 11, 0.2)); border:1px solid rgba(251, 191, 36, 0.5); border-radius:10px; margin-bottom:10px;">
+                            <span style="color:var(--accent-gold); font-weight:600; display:flex; align-items:center; gap:10px;">
+                                <span style="background:var(--accent-gold); color:#000; padding:2px 8px; border-radius:4px; font-weight:700; font-size:12px;">2</span>
+                                <span style="font-size:14px;">الطريقة الثانية: إضافة قاعة يدوياً</span>
+                            </span>
+                            <i data-lucide="chevron-down" id="manualRoomChevron" style="width:18px; height:18px; color:var(--accent-gold); transition:transform 0.2s;"></i>
+                        </div>
+                        <div id="manualRoomSection" style="display:none; padding:15px; background:rgba(251, 191, 36, 0.1); border-radius:10px; border:1px solid rgba(251, 191, 36, 0.3);">
+                            <div class="room-input-group" style="display:flex; gap:10px; margin-bottom:10px;">
+                                <input type="text" class="form-input" id="manualRoomInput" placeholder="اكتب اسم القاعة واضغط Enter" style="flex:1; border-color:rgba(251, 191, 36, 0.4);">
+                                <button class="nav-btn next" onclick="addManualRoomWithSS01()" style="padding:10px 20px;">إضافة</button>
+                            </div>
+                            <div class="room-chips" id="manualRoomChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                        </div>
+                    </div>
+                `;
+
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+
+                // Render any previously saved manual rooms and expand section if needed
+                renderManualRoomChips();
+                const manualRooms = roomsWithBuilding.filter(r => r.building === 'يدوي');
+                if (manualRooms.length > 0) {
+                    const section = document.getElementById('manualRoomSection');
+                    const chevron = document.getElementById('manualRoomChevron');
+                    if (section) section.style.display = 'block';
+                    if (chevron) chevron.style.transform = 'rotate(180deg)';
+                }
+            } else {
+                container.innerHTML = `
+                    <div class="alert warning">لم يتم رفع ملف SS01 ليتم اختيار القاعات. يمكنك حالياً إدخال أسماء القاعات يدوياً، أو ستظهر أسماء اللجان كما هو موضح في جدول توزيع المتدربين على اللجان.</div>
+                    <div class="room-status" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>تم إدخال: <span class="count" id="manualCount">${roomNames.length}</span> من <span class="count">${committeeCount}</span> قاعة</span>
+                        ${roomNames.length > 0 ? `
+                            <button onclick="clearAllRoomData()" style="background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid #ef4444; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:4px;">
+                                <i data-lucide="trash-2" style="width:14px; height:14px;"></i> مسح الكل
+                            </button>
+                        ` : ''}
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">أدخل أسماء القاعات:</label>
+                        <div class="room-input-group">
+                            <input type="text" class="form-input" id="roomInput" placeholder="اكتب اسم القاعة واضغط Enter">
+                            <button class="nav-btn next" onclick="addRoom()" style="padding:10px 20px;">إضافة</button>
+                        </div>
+                        <div class="room-chips" id="roomChips"></div>
+                    </div>
+                    <div id="manualMaxAlert" class="alert info" style="display:none;">تم إدخال العدد المطلوب من القاعات</div>
+                `;
+
+                document.getElementById('roomInput').onkeypress = (e) => {
+                    if (e.key === 'Enter') addRoom();
+                };
+
+                // Render any previously saved rooms
+                renderRoomChips();
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+
+            updateDistributionPreview();
+        }
+
+        function toggleBuilding(buildingName) {
+            const card = document.querySelector(`.building-card[data-building="${buildingName}"]`);
+            const colorIndex = parseInt(card.dataset.colorIndex);
+            const color = buildingColors[colorIndex];
+
+            if (selectedBuildings.includes(buildingName)) {
+                // Deselect building
+                selectedBuildings = selectedBuildings.filter(b => b !== buildingName);
+                card.classList.remove('selected');
+                card.style.background = '';
+                card.style.borderColor = color + '30';
+
+                // Remove rooms from this building
+                roomsWithBuilding = roomsWithBuilding.filter(r => r.building !== buildingName);
+                roomNames = roomsWithBuilding.map(r => r.room);
+            } else {
+                // Select building
+                selectedBuildings.push(buildingName);
+                card.classList.add('selected');
+                card.style.background = color + '20';
+                card.style.borderColor = color;
+            }
+
+            // Update rooms grid for all selected buildings
+            updateRoomsFromSelectedBuildings();
+            renderRoomGrid();
+            updateDistributionPreview();
+        }
+
+        function updateRoomsFromSelectedBuildings() {
+            allRoomsInBuilding = [];
+            selectedBuildings.forEach((building, bIndex) => {
+                const colorIndex = [...document.querySelectorAll('.building-card')].findIndex(c => c.dataset.building === building);
+                const rooms = [...new Set(ss01Data.filter(r => r['مبنى'] === building).map(r => r['قاعة']).filter(Boolean))];
+                rooms.forEach(room => {
+                    if (!allRoomsInBuilding.some(r => r.room === room)) {
+                        allRoomsInBuilding.push({
+                            room,
+                            building,
+                            colorIndex: colorIndex % buildingColors.length
+                        });
+                    }
+                });
+            });
+        }
+
+        function renderRoomGrid() {
+            const filter = (document.getElementById('roomSearch')?.value || '').toLowerCase();
+            let rooms = allRoomsInBuilding;
+            if (filter) rooms = rooms.filter(r => r.room.toLowerCase().includes(filter));
+
+            const isMaxReached = roomsWithBuilding.length >= committeeCount;
+            const gridEl = document.getElementById('roomGrid');
+            if (!gridEl) return;
+
+            gridEl.innerHTML = rooms.map(r => {
+                const isSelected = roomsWithBuilding.some(rb => rb.room === r.room);
+                const isDisabled = !isSelected && isMaxReached;
+                const color = buildingColors[r.colorIndex];
+                return `<label class="room-checkbox ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}" 
+                               onclick="toggleRoom('${r.room}', '${r.building}', ${r.colorIndex}, event)"
+                               style="border-right: 3px solid ${color};">
+                    <input type="checkbox" ${isSelected ? 'checked' : ''} ${isDisabled ? 'disabled' : ''}> ${r.room}
+                </label>`;
+            }).join('');
+
+            const countEl = document.getElementById('selectedCount');
+            if (countEl) countEl.textContent = roomsWithBuilding.length;
+
+            const remaining = committeeCount - roomsWithBuilding.length;
+            const remainingEl = document.getElementById('remainingText');
+            if (remainingEl) remainingEl.textContent = remaining > 0 ? `(متبقي: ${remaining})` : '';
+
+            const alertEl = document.getElementById('maxReachedAlert');
+            if (alertEl) alertEl.style.display = isMaxReached ? 'block' : 'none';
+        }
+
+        function filterRooms() {
+            renderRoomGrid();
+        }
+
+        function toggleRoom(roomName, buildingName, colorIndex, e) {
+            e.preventDefault();
+            const roomObj = { room: roomName, building: buildingName, colorIndex };
+
+            // Check if room is already assigned
+            const existingCommitteeIndex = committeeRooms.findIndex(r => r && r.room === roomName);
+
+            if (existingCommitteeIndex >= 0) {
+                // Remove room from that committee
+                committeeRooms[existingCommitteeIndex] = null;
+                roomsWithBuilding = roomsWithBuilding.filter(r => r.room !== roomName);
+            } else {
+                // Find first empty slot
+                let emptySlotIndex = committeeRooms.findIndex(r => r === null);
+                if (emptySlotIndex === -1 && committeeRooms.length < committeeCount) {
+                    emptySlotIndex = committeeRooms.length;
+                }
+
+                if (emptySlotIndex === -1) {
+                    showToast(`تم الوصول للحد الأقصى (${committeeCount} قاعة)`, 'warning');
+                    return;
+                }
+
+                // Add room to first empty slot
+                committeeRooms[emptySlotIndex] = roomObj;
+                roomsWithBuilding.push(roomObj);
+            }
+
+            roomNames = roomsWithBuilding.map(r => r.room);
+
+            // Update hasRoom in committeeDistribution without resetting names
+            updateCommitteeHasRoom();
+            saveRoomData();
+
+            renderRoomGrid();
+            renderCommitteeTable();
+        }
+
+        // Update hasRoom status without resetting committee names
+        function updateCommitteeHasRoom() {
+            for (let i = 0; i < committeeDistribution.length; i++) {
+                committeeDistribution[i].hasRoom = !!committeeRooms[i];
+            }
+        }
+
+        // Drag and Drop functions
+        let draggedIndex = null;
+
+        function dragStart(e) {
+            draggedIndex = parseInt(e.target.dataset.index);
+            e.target.classList.add('dragging');
+        }
+
+        function dragOver(e) {
+            e.preventDefault();
+        }
+
+        function drop(e) {
+            e.preventDefault();
+            const targetIndex = parseInt(e.target.closest('.sortable-room-item')?.dataset.index);
+            if (targetIndex === undefined || targetIndex === draggedIndex) return;
+
+            // Reorder array
+            const [draggedItem] = roomsWithBuilding.splice(draggedIndex, 1);
+            roomsWithBuilding.splice(targetIndex, 0, draggedItem);
+            roomNames = roomsWithBuilding.map(r => r.room);
+
+            committeeDistribution = []; // Reset distribution
+            renderSortableRooms();
+            updateDistributionPreview();
+        }
+
+        function dragEnd(e) {
+            e.target.classList.remove('dragging');
+            draggedIndex = null;
+        }
+
+        // Room-based drag and drop (drag only the room element, not the row)
+        function dragStartRoom(e) {
+            const roomItem = e.target.closest('.room-drag-item');
+            if (!roomItem) return;
+            draggedIndex = parseInt(roomItem.dataset.committeeIndex);
+            roomItem.style.opacity = '0.5';
+            e.dataTransfer.effectAllowed = 'move';
+        }
+
+        function dragOverRoom(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        }
+
+        function dropRoom(e) {
+            e.preventDefault();
+            const dropTarget = e.target.closest('.room-drag-item, .room-drop-zone');
+            if (!dropTarget) return;
+
+            const targetIndex = parseInt(dropTarget.dataset.committeeIndex);
+            if (isNaN(targetIndex) || targetIndex === draggedIndex || draggedIndex === null) return;
+
+            // Swap rooms in committeeRooms (the source has a room, target may or may not)
+            const draggedRoom = committeeRooms[draggedIndex];
+            const targetRoom = committeeRooms[targetIndex];
+
+            if (!draggedRoom) return; // Can only drag rooms that exist
+
+            // Swap rooms between positions
+            committeeRooms[draggedIndex] = targetRoom; // May be null
+            committeeRooms[targetIndex] = draggedRoom;
+
+            // Update roomNames and roomsWithBuilding
+            roomsWithBuilding = committeeRooms.filter(r => r !== null);
+            roomNames = roomsWithBuilding.map(r => r.room);
+
+            // Update hasRoom without resetting committee names
+            updateCommitteeHasRoom();
+            renderRoomGrid();
+            renderCommitteeTable();
+
+            draggedIndex = null;
+        }
+
+        function dragEndRoom(e) {
+            const roomItem = e.target.closest('.room-drag-item');
+            if (roomItem) roomItem.style.opacity = '1';
+            draggedIndex = null;
+        }
+
+        function removeRoomFromCommittee(index) {
+            if (committeeRooms[index]) {
+                const removedRoom = committeeRooms[index];
+                committeeRooms[index] = null;
+                roomsWithBuilding = roomsWithBuilding.filter(r => r.room !== removedRoom.room);
+                roomNames = roomsWithBuilding.map(r => r.room);
+
+                updateCommitteeHasRoom();
+                saveRoomData();
+                renderRoomGrid();
+                renderCommitteeTable();
+            }
+        }
+
+        function removeSelectedRoom(index) {
+            removeRoomFromCommittee(index);
+        }
+
+        function addRoom() {
+            const input = document.getElementById('roomInput');
+            const name = input.value.trim();
+
+            if (roomNames.length >= committeeCount) {
+                showToast(`تم الوصول للحد الأقصى (${committeeCount} قاعة)`, 'warning');
+                return;
+            }
+
+            if (name && !roomNames.includes(name)) {
+                const roomObj = { room: name, building: 'يدوي', colorIndex: 0 };
+                roomNames.push(name);
+                roomsWithBuilding.push(roomObj);
+
+                // Also update committeeRooms - find first empty slot
+                let emptySlotIndex = committeeRooms.findIndex(r => r === null);
+                if (emptySlotIndex === -1 && committeeRooms.length < committeeCount) {
+                    emptySlotIndex = committeeRooms.length;
+                }
+                if (emptySlotIndex >= 0) {
+                    // Ensure committeeRooms array has enough slots
+                    while (committeeRooms.length <= emptySlotIndex) {
+                        committeeRooms.push(null);
+                    }
+                    committeeRooms[emptySlotIndex] = roomObj;
+                }
+
+                input.value = '';
+                committeeDistribution = []; // Reset for new room
+                saveRoomData();
+                renderRoomChips();
+                updateDistributionPreview();
+            }
+        }
+
+        function removeRoom(name) {
+            roomNames = roomNames.filter(r => r !== name);
+            roomsWithBuilding = roomsWithBuilding.filter(r => r.room !== name);
+            // Also remove from committeeRooms
+            const idx = committeeRooms.findIndex(r => r && r.room === name);
+            if (idx >= 0) committeeRooms[idx] = null;
+            committeeDistribution = []; // Reset after removing room
+            saveRoomData();
+            renderRoomChips();
+            updateDistributionPreview();
+        }
+
+        function renderRoomChips() {
+            const chipsEl = document.getElementById('roomChips');
+            if (chipsEl) {
+                chipsEl.innerHTML = roomNames.map(r =>
+                    `<div class="room-chip">${r} <span class="remove" onclick="removeRoom('${r}')">✕</span></div>`
+                ).join('');
+            }
+            const countEl = document.getElementById('manualCount');
+            if (countEl) countEl.textContent = roomNames.length;
+            const alertEl = document.getElementById('manualMaxAlert');
+            if (alertEl) alertEl.style.display = roomNames.length >= committeeCount ? 'block' : 'none';
+        }
+
+        // Toggle manual room section visibility (when SS01 is present)
+        function toggleManualRoomSection() {
+            const section = document.getElementById('manualRoomSection');
+            const chevron = document.getElementById('manualRoomChevron');
+            if (section && chevron) {
+                const isOpen = section.style.display !== 'none';
+                section.style.display = isOpen ? 'none' : 'block';
+                chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
+
+                if (!isOpen) {
+                    // Attach keypress listener when opened
+                    const input = document.getElementById('manualRoomInput');
+                    if (input) {
+                        input.onkeypress = (e) => { if (e.key === 'Enter') addManualRoomWithSS01(); };
+                    }
+                }
+            }
+        }
+
+        // Add manual room when SS01 file is present
+        function addManualRoomWithSS01() {
+            const input = document.getElementById('manualRoomInput');
+            const name = input?.value?.trim();
+            if (!name) return;
+
+            if (roomsWithBuilding.length >= committeeCount) {
+                showToast(`تم الوصول للحد الأقصى (${committeeCount} قاعة)`, 'warning');
+                return;
+            }
+
+            if (roomsWithBuilding.some(r => r.room === name)) {
+                showToast('هذه القاعة موجودة بالفعل', 'warning');
+                return;
+            }
+
+            const roomObj = { room: name, building: 'يدوي', colorIndex: 9 }; // Use last color (purple) for manual
+            roomsWithBuilding.push(roomObj);
+            roomNames.push(name);
+
+            // Find empty slot in committeeRooms
+            let emptySlotIndex = committeeRooms.findIndex(r => r === null);
+            if (emptySlotIndex === -1 && committeeRooms.length < committeeCount) {
+                emptySlotIndex = committeeRooms.length;
+            }
+            if (emptySlotIndex >= 0) {
+                while (committeeRooms.length <= emptySlotIndex) {
+                    committeeRooms.push(null);
+                }
+                committeeRooms[emptySlotIndex] = roomObj;
+            }
+
+            input.value = '';
+            saveRoomData();
+            renderRoomGrid();
+            renderManualRoomChips();
+            renderCommitteeTable();
+            showToast(`تم إضافة قاعة: ${name}`, 'success');
+        }
+
+        // Render chips for manually added rooms (when SS01 is present)
+        function renderManualRoomChips() {
+            const chipsEl = document.getElementById('manualRoomChips');
+            if (!chipsEl) return;
+
+            const manualRooms = roomsWithBuilding.filter(r => r.building === 'يدوي');
+            chipsEl.innerHTML = manualRooms.map(r => `
+                <div style="background:var(--accent-blue); color:#fff; padding:4px 8px; border-radius:6px; font-size:12px; display:inline-flex; align-items:center; gap:6px;">
+                    ${r.room}
+                    <span onclick="removeRoom('${r.room}')" 
+                          style="cursor:pointer; background:rgba(255,255,255,0.2); padding:2px 4px; border-radius:4px; font-weight:700;">✕</span>
+                </div>
+            `).join('');
+        }
+
+        function updateDistributionPreview() {
+            // Calculate total trainees for selected courses
+            let trainees = [];
+            selectedCourses.forEach(key => {
+                const [code, scheduleType] = key.split('|');
+                const courseTrainees = sf01Data.filter(r =>
+                    r['المقرر'] === code &&
+                    r['نوع الجدولة'] === scheduleType &&
+                    includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد') &&
+                    isInstructorIncluded(r)
+                );
+                trainees = trainees.concat(courseTrainees);
+            });
+
+            // Fallback: if no trainees match filters, get all for selected courses
+            if (trainees.length === 0) {
+                selectedCourses.forEach(key => {
+                    const [code, scheduleType] = key.split('|');
+                    const courseTrainees = sf01Data.filter(r =>
+                        r['المقرر'] === code &&
+                        r['نوع الجدولة'] === scheduleType
+                    );
+                    trainees = trainees.concat(courseTrainees);
+                });
+            }
+
+            totalTraineesCount = trainees.length;
+
+            // Initialize or update committee distribution
+            if (committeeDistribution.length === 0) {
+                initCommitteeDistribution();
+            }
+
+            renderCommitteeTable();
+        }
+
+        function initCommitteeDistribution() {
+            // Always use committeeCount
+            const rooms = committeeCount;
+            const n = totalTraineesCount;
+            const base = Math.floor(n / rooms);
+            const extra = n % rooms;
+
+            // Initialize committeeRooms if needed (array of length committeeCount)
+            if (committeeRooms.length !== rooms) {
+                // Preserve existing rooms in order, pad with nulls
+                const newCommitteeRooms = [];
+                for (let i = 0; i < rooms; i++) {
+                    newCommitteeRooms.push(committeeRooms[i] || roomsWithBuilding[i] || null);
+                }
+                committeeRooms = newCommitteeRooms;
+            }
+
+            // Preserve existing committee names and custom status if available
+            const existingData = committeeDistribution.map(c => ({
+                name: c.name,
+                isNameCustom: c.isNameCustom || false
+            }));
+
+            committeeDistribution = [];
+            for (let i = 0; i < rooms; i++) {
+                const count = base + (i < extra ? 1 : 0);
+                // Keep existing name and custom status or use default
+                const name = existingData[i]?.name || `لجنة ${i + 1}`;
+                const isNameCustom = existingData[i]?.isNameCustom || false;
+                const hasRoom = !!committeeRooms[i];
+                committeeDistribution.push({ name, count, locked: false, hasRoom, isNameCustom });
+            }
+        }
+
+        function renderCommitteeTable() {
+            const currentTotal = committeeDistribution.reduce((sum, c) => sum + c.count, 0);
+            const isBalanced = currentTotal === totalTraineesCount;
+            const diff = totalTraineesCount - currentTotal;
+
+            let html = `
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-top:20px; margin-bottom:10px;">
+                    <h3 style="color:var(--text-light); margin:0; display:flex; align-items:center; gap:8px;">
+                        <i data-lucide="settings-2" style="width:20px; height:20px;"></i> توزيع المتدربين على اللجان
+                    </h3>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="resetDistribution()" 
+                            title="إعادة ضبط: إعادة تسمية اللجان غير المعدلة يدوياً + توزيع متساوي من البداية"
+                            style="background:var(--bg-header); border:1px solid var(--border-dark); color:var(--text-light); padding:6px 12px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px;">
+                            <i data-lucide="refresh-ccw" style="width:14px; height:14px;"></i> إعادة ضبط
+                        </button>
+                        <button onclick="autoBalance()" 
+                            title="تسوية تلقائية: نستخدمها عند إضافة/حذف شعبة حيث يتم إعادة توزيع الفائض/الناقص على اللجان غير المقفلة فقط. مثال: إذا بقي 5 متدربين يوزعهم على اللجان المفتوحة"
+                            style="background:var(--bg-card); border:1px solid var(--accent-gold); color:var(--accent-gold); padding:6px 12px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px;">
+                            <i data-lucide="scale" style="width:14px; height:14px;"></i> تسوية تلقائية
+                        </button>
+                    </div>
+                </div>
+                <table class="committee-dist-table">
+                    <thead>
+                        <tr>
+                            <th style="width:10%;">#</th>
+                            <th style="width:25%;">القاعة</th>
+                            <th style="width:25%;">اللجنة</th>
+                            <th style="width:15%;">المتدربين</th>
+                            <th style="width:10%;">قفل</th>
+                            <th style="width:15%;">حذف</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            committeeDistribution.forEach((c, i) => {
+                const isWarning = c.count === 0;
+                const isPending = !c.hasRoom;
+                const rowClass = isWarning ? 'warning-row' : (isPending ? 'committee-pending' : '');
+                const lockIcon = c.locked ? 'lock' : 'lock-open';
+                const lockClass = c.locked ? 'locked' : '';
+
+                // Get room info from committeeRooms (not roomsWithBuilding)
+                const roomInfo = committeeRooms[i];
+                const roomColor = roomInfo ? buildingColors[roomInfo.colorIndex] : '#666';
+                const roomName = roomInfo ? roomInfo.room : '';
+                const roomBuilding = roomInfo ? roomInfo.building : '';
+
+                html += `
+                    <tr class="${rowClass}" data-index="${i}">
+                        <td style="font-weight:600; color:var(--accent-gold);">${i + 1}</td>
+                        <td>
+                            ${roomInfo ? `
+                                <div class="room-drag-item" draggable="true" data-committee-index="${i}"
+                                     ondragstart="dragStartRoom(event)" ondragover="dragOverRoom(event)" 
+                                     ondrop="dropRoom(event)" ondragend="dragEndRoom(event)"
+                                     style="display:flex; align-items:center; gap:6px; padding:6px; background:var(--bg-header); border-radius:6px; border-right:3px solid ${roomColor}; cursor:grab;">
+                                    <span class="drag-handle" style="color:var(--text-muted);">
+                                        <i data-lucide="grip-vertical" style="width:14px; height:14px;"></i>
+                                    </span>
+                                    <span style="width:8px; height:8px; border-radius:50%; background:${roomColor};"></span>
+                                    <span style="flex:1;"><strong>${roomName}</strong></span>
+                                    <button class="remove-btn" onclick="removeRoomFromCommittee(${i})" title="إزالة القاعة"
+                                            style="background:none; border:none; color:var(--accent-red); cursor:pointer; padding:2px;">
+                                        <i data-lucide="x" style="width:14px; height:14px;"></i>
+                                    </button>
+                                </div>
+                                <div style="font-size:10px; color:var(--text-muted); margin-right:20px; margin-top:2px;">${roomBuilding}</div>
+                            ` : `
+                                <div class="room-drop-zone" data-committee-index="${i}"
+                                     ondragover="dragOverRoom(event)" ondrop="dropRoom(event)"
+                                     style="padding:10px; text-align:center; border:2px dashed var(--border-dark); border-radius:6px;">
+                                    <span style="color:#f59e0b;">⚠️ لم تُحدد</span>
+                                </div>
+                            `}
+                        </td>
+                        <td>
+                            <input type="text" class="committee-name-input ${c.isNameCustom ? 'custom-name' : ''}" value="${c.name}" 
+                                   style="background:transparent; border:1px solid ${c.isNameCustom ? 'var(--accent-gold)' : 'var(--border-dark)'}; border-radius:6px; padding:4px 8px; color:var(--text-light); font-size:12px; width:100%;"
+                                   onchange="updateCommitteeName(${i}, this.value)">
+                        </td>
+                        <td>
+                            <input type="number" class="count-input" value="${c.count}" min="0" 
+                                   onchange="updateCommitteeCount(${i}, parseInt(this.value) || 0)">
+                        </td>
+                        <td>
+                            <button class="action-btn lock-btn ${lockClass}" onclick="toggleCommitteeLock(${i})" 
+                                    title="${c.locked ? 'فتح القفل' : 'قفل'}">
+                                <i data-lucide="${lockIcon}" style="width:18px; height:18px;"></i>
+                            </button>
+                        </td>
+                        <td>
+                            <button class="action-btn delete-btn" onclick="deleteCommittee(${i})" title="حذف اللجنة">
+                                <i data-lucide="x" style="width:18px; height:18px;"></i>
+                            </button>
+                        </td>
+                    </tr>`;
+            });
+
+            // Add committee button row
+            html += `
+                <tr class="add-committee-row">
+                    <td colspan="6" style="text-align:center; padding:12px;">
+                        <button onclick="addCommittee()" class="add-committee-btn" title="إضافة لجنة جديدة"
+                                style="background:var(--bg-header); border:2px dashed var(--accent-gold); border-radius:10px; 
+                                       padding:10px 20px; color:var(--accent-gold); cursor:pointer; font-family:inherit;
+                                       font-size:14px; display:inline-flex; align-items:center; gap:8px; transition:all 0.2s;">
+                            <i data-lucide="plus-circle" style="width:20px; height:20px;"></i>
+                            إضافة لجنة
+                        </button>
+                    </td>
+                </tr>`;
+
+            html += `</tbody></table>`;
+
+            // Total bar
+            const barClass = isBalanced ? 'balanced' : 'unbalanced';
+            const statusIcon = isBalanced ? 'check-circle' : 'alert-circle';
+            const diffText = diff > 0 ? `(ناقص ${diff})` : (diff < 0 ? `(زائد ${Math.abs(diff)})` : '');
+
+            html += `
+                <div class="total-bar ${barClass}">
+                    <i data-lucide="${statusIcon}" style="width:20px; height:20px;"></i>
+                    <span>المجموع: ${currentTotal} / ${totalTraineesCount} ${diffText}</span>
+                </div>`;
+
+            document.getElementById('distributionPreview').innerHTML = html;
+
+            // Reinitialize Lucide icons
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+
+            // Render distribution chart
+            renderDistributionChart();
+        }
+
+        // Chart instance reference
+        let distributionChartInstance = null;
+
+        function renderDistributionChart() {
+            const chartContainer = document.getElementById('chartContainer');
+            const canvas = document.getElementById('distributionChart');
+
+            if (!chartContainer || !canvas || committeeDistribution.length === 0) {
+                if (chartContainer) chartContainer.style.display = 'none';
+                return;
+            }
+
+            // Show chart container
+            chartContainer.style.display = 'block';
+
+            // Prepare chart data
+            const labels = committeeDistribution.map(c => c.name);
+            const data = committeeDistribution.map(c => c.count);
+            const averageCount = totalTraineesCount / committeeDistribution.length;
+
+            // Generate colors based on count (green if at average, gradient otherwise)
+            const backgroundColors = data.map(count => {
+                if (count === 0) return 'rgba(239, 68, 68, 0.7)'; // Red for empty
+                if (count >= averageCount - 1 && count <= averageCount + 1) return 'rgba(16, 185, 129, 0.7)'; // Green for balanced
+                return 'rgba(251, 191, 36, 0.7)'; // Gold for others
+            });
+
+            const borderColors = data.map(count => {
+                if (count === 0) return 'rgba(239, 68, 68, 1)';
+                if (count >= averageCount - 1 && count <= averageCount + 1) return 'rgba(16, 185, 129, 1)';
+                return 'rgba(251, 191, 36, 1)';
+            });
+
+            // Destroy existing chart if any
+            if (distributionChartInstance) {
+                distributionChartInstance.destroy();
+            }
+
+            // Create new chart
+            const ctx = canvas.getContext('2d');
+            distributionChartInstance = new Chart(ctx, {
+                type: 'bar',
+                plugins: [ChartDataLabels],
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'عدد المتدربين',
+                        data: data,
+                        backgroundColor: backgroundColors,
+                        borderColor: borderColors,
+                        borderWidth: 2,
+                        borderRadius: 6,
+                        barThickness: 'flex',
+                        maxBarThickness: 50
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            rtl: true,
+                            textDirection: 'rtl',
+                            backgroundColor: 'rgba(30, 41, 59, 0.95)',
+                            titleFont: { family: 'Cairo', size: 14 },
+                            bodyFont: { family: 'Cairo', size: 13 },
+                            padding: 12,
+                            cornerRadius: 8,
+                            callbacks: {
+                                label: function (context) {
+                                    const percentage = ((context.raw / totalTraineesCount) * 100).toFixed(1);
+                                    return `${context.raw} متدرب (${percentage}%)`;
+                                }
+                            }
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'start',
+                            offset: 4,
+                            textAlign: 'center',
+                            color: '#ffffff',
+                            font: {
+                                family: 'Cairo',
+                                size: 14,
+                                weight: 'bold'
+                            },
+                            formatter: function (value) {
+                                return value;
+                            }
+                        }
+                    },
+                    layout: {
+                        padding: {
+                            top: 30
+                        }
+                    },
+                    scales: {
+                        y: {
+                            display: false,
+                            beginAtZero: true,
+                            grace: '15%'
+                        },
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                color: '#94a3b8',
+                                font: { family: 'Cairo', size: 11 },
+                                maxRotation: 45,
+                                minRotation: 0
+                            }
+                        }
+                    },
+                    animation: {
+                        duration: 500,
+                        easing: 'easeOutQuart'
+                    }
+                }
+            });
+
+            // Reinitialize Lucide icons in chart container
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+        function updateCommitteeCount(index, newCount) {
+            if (index >= 0 && index < committeeDistribution.length) {
+                committeeDistribution[index].count = Math.max(0, newCount);
+                renderCommitteeTable();
+            }
+        }
+
+        function updateCommitteeName(index, newName) {
+            if (index >= 0 && index < committeeDistribution.length) {
+                const trimmedName = newName.trim();
+                const defaultName = `لجنة ${index + 1}`;
+
+                // Check if name is different from default
+                if (trimmedName && trimmedName !== defaultName) {
+                    committeeDistribution[index].name = trimmedName;
+                    committeeDistribution[index].isNameCustom = true;
+                } else {
+                    committeeDistribution[index].name = defaultName;
+                    committeeDistribution[index].isNameCustom = false;
+                }
+                renderCommitteeTable();
+            }
+        }
+
+        function toggleCommitteeLock(index) {
+            if (index >= 0 && index < committeeDistribution.length) {
+                committeeDistribution[index].locked = !committeeDistribution[index].locked;
+                renderCommitteeTable();
+            }
+        }
+
+        function addCommittee() {
+            // Add new committee
+            committeeCount++;
+            step6LastCommitteeCount = committeeCount;
+
+            // Add new committeeRoom slot (null = no room assigned)
+            committeeRooms.push(null);
+
+            // Add new committee to distribution
+            const newCommittee = {
+                name: `لجنة ${committeeCount}`,
+                count: 0,
+                locked: false,
+                hasRoom: false,
+                isNameCustom: false
+            };
+            committeeDistribution.push(newCommittee);
+
+            // Redistribute trainees among unlocked committees
+            redistributeTrainees();
+
+            renderRoomGrid();
+            renderCommitteeTable();
+            showToast('تم إضافة لجنة جديدة', 'success');
+        }
+
+        function redistributeTrainees() {
+            // Get locked committees and their total
+            let lockedTotal = 0;
+            let unlockedCount = 0;
+
+            committeeDistribution.forEach(c => {
+                if (c.locked) {
+                    lockedTotal += c.count;
+                } else {
+                    unlockedCount++;
+                }
+            });
+
+            // Calculate remaining trainees for unlocked committees
+            const remainingTrainees = totalTraineesCount - lockedTotal;
+
+            if (unlockedCount === 0 || remainingTrainees < 0) return;
+
+            // Distribute remaining trainees evenly among unlocked
+            const base = Math.floor(remainingTrainees / unlockedCount);
+            let extra = remainingTrainees % unlockedCount;
+
+            committeeDistribution.forEach(c => {
+                if (!c.locked) {
+                    c.count = base + (extra > 0 ? 1 : 0);
+                    if (extra > 0) extra--;
+                }
+            });
+        }
+
+        function deleteCommittee(index) {
+            if (committeeDistribution.length <= 1) {
+                showToast('لا يمكن حذف اللجنة الوحيدة', 'error');
+                return;
+            }
+
+            const deletedCount = committeeDistribution[index].count;
+            const deletedRoom = committeeRooms[index];
+            committeeDistribution.splice(index, 1);
+            committeeRooms.splice(index, 1);
+
+            // Remove deleted room from roomsWithBuilding and roomNames
+            if (deletedRoom) {
+                roomsWithBuilding = roomsWithBuilding.filter(r => r.room !== deletedRoom.room);
+                roomNames = roomsWithBuilding.map(r => r.room);
+            }
+
+            // Distribute deleted count to unlocked committees
+            if (deletedCount > 0) {
+                const unlocked = committeeDistribution.filter(c => !c.locked);
+                if (unlocked.length > 0) {
+                    const perCommittee = Math.floor(deletedCount / unlocked.length);
+                    let remainder = deletedCount % unlocked.length;
+
+                    unlocked.forEach(c => {
+                        c.count += perCommittee;
+                        if (remainder > 0) {
+                            c.count++;
+                            remainder--;
+                        }
+                    });
+                }
+            }
+
+            // Update committeeCount
+            committeeCount = committeeDistribution.length;
+            saveRoomData();
+            renderRoomGrid();
+            renderCommitteeTable();
+        }
+
+        function autoBalance() {
+            const currentTotal = committeeDistribution.reduce((sum, c) => sum + c.count, 0);
+            const diff = totalTraineesCount - currentTotal;
+
+            if (diff === 0) {
+                showToast('التوزيع متوازن بالفعل', 'info');
+                return;
+            }
+
+            const unlocked = committeeDistribution.filter(c => !c.locked);
+            if (unlocked.length === 0) {
+                showToast('جميع اللجان مقفلة - افتح واحدة على الأقل للتسوية', 'warning');
+                return;
+            }
+
+            const perCommittee = Math.floor(Math.abs(diff) / unlocked.length);
+            let remainder = Math.abs(diff) % unlocked.length;
+            const sign = diff > 0 ? 1 : -1;
+
+            unlocked.forEach(c => {
+                c.count += sign * perCommittee;
+                if (remainder > 0) {
+                    c.count += sign;
+                    remainder--;
+                }
+                // Ensure non-negative
+                c.count = Math.max(0, c.count);
+            });
+
+            renderCommitteeTable();
+            showToast('تم تسوية التوزيع تلقائياً', 'success');
+        }
+
+        function resetDistribution() {
+            const rooms = committeeCount;
+            const n = totalTraineesCount;
+            const base = Math.floor(n / rooms);
+            const extra = n % rooms;
+
+            // Reset distribution but keep custom names
+            for (let i = 0; i < committeeDistribution.length; i++) {
+                // Reset count
+                committeeDistribution[i].count = base + (i < extra ? 1 : 0);
+                committeeDistribution[i].locked = false;
+
+                // Reset name only if not custom
+                if (!committeeDistribution[i].isNameCustom) {
+                    committeeDistribution[i].name = `لجنة ${i + 1}`;
+                }
+            }
+
+            renderCommitteeTable();
+            showToast('تم إعادة ضبط التوزيع المتساوي', 'success');
+        }
+
+        // Step 5: Generate Reports
+        function generateReports() {
+            try {
+                // Save print settings whenever reports are regenerated
+                savePrintSettings();
+
+                // Filter by selected courses and included statuses
+                let trainees = [];
+                selectedCourses.forEach(key => {
+                    const [code, scheduleType] = key.split('|');
+                    const courseTrainees = sf01Data.filter(r =>
+                        r['المقرر'] === code &&
+                        r['نوع الجدولة'] === scheduleType &&
+                        includedStatuses.includes(r['حالة تسجيل'] || 'غير محدد') &&
+                        isInstructorIncluded(r)
+                    );
+                    trainees = trainees.concat(courseTrainees);
+                });
+
+                // Fallback: if no trainees match, use all trainees for selected courses
+                if (trainees.length === 0) {
+                    selectedCourses.forEach(key => {
+                        const [code, scheduleType] = key.split('|');
+                        const courseTrainees = sf01Data.filter(r =>
+                            r['المقرر'] === code &&
+                            r['نوع الجدولة'] === scheduleType
+                        );
+                        trainees = trainees.concat(courseTrainees);
+                    });
+                }
+
+                // Apply sort order
+                const currentSortOrder = document.querySelector('input[name="sortOrder"]:checked')?.value || 'traineeId';
+
+                if (currentSortOrder === 'traineeId') {
+                    trainees.sort((a, b) => (a['رقم المتدرب'] || '').localeCompare(b['رقم المتدرب'] || ''));
+            } else if (currentSortOrder === 'referenceNumber') {
+            trainees.sort((a, b) => {
+                const rA = String(a['الرقم المرجعي'] || '').trim();
+                const rB = String(b['الرقم المرجعي'] || '').trim();
+                const cR = rA.localeCompare(rB, undefined, { numeric: true });
+                
+                if (cR !== 0) return cR;
+                
+                const nA = String(a['إسم المتدرب'] || a['اسم المتدرب'] || '').trim();
+                const nB = String(b['إسم المتدرب'] || b['اسم المتدرب'] || '').trim();
+                return nA.localeCompare(nB, 'ar');
+            });
+                } else if (currentSortOrder === 'instructor') {
+                    trainees.sort((a, b) => (a['المدرب'] || '').localeCompare(b['المدرب'] || ''));
+                } else if (currentSortOrder === 'traineeName') {
+                    trainees.sort((a, b) => (a['إسم المتدرب'] || a['اسم المتدرب'] || '').localeCompare(b['إسم المتدرب'] || b['اسم المتدرب'] || ''));
+                }
+
+                // Get course names for header
+                const courseNames = selectedCourses.map(key => {
+                    const [code] = key.split('|');
+                    const course = sf01Data.find(r => r['المقرر'] === code);
+                    return course ? `${code} - ${course['اسم المقرر']}` : code;
+                }).join(' | ');
+
+                // collegeName and semester are extracted per-committee inside the loop below
+
+                // Use committeeDistribution for customized distribution
+                // Filter out committees with 0 trainees (cancelled), keep original index
+                const activeCommittees = committeeDistribution
+                    .map((c, idx) => ({ ...c, originalIndex: idx }))
+                    .filter(c => c.count > 0);
+
+                if (activeCommittees.length === 0) {
+                    showToast('جميع اللجان فارغة. أعد توزيع المتدربين.', 'error');
+                    return;
+                }
+
+                let html = '';
+                let start = 0;
+
+                // Check if extra columns should be hidden
+                const hideExtraCols = document.getElementById('hideExtraColumns')?.checked || false;
+                // When a single instructor remains, drop the instructor column and show the name in the header
+                const showInstructorCol = !isSingleInstructor();
+                const singleInstructorName = showInstructorCol ? '' : getActiveInstructors()[0];
+                const totalCols = 7 - (hideExtraCols ? 1 : 0) - (showInstructorCol ? 0 : 1);
+
+                // Build course name line for header (when columns are hidden)
+                const courseNameHeaderLine = hideExtraCols ? `<div style="font-size:13px; color:#333;">المقرر: <span style="font-weight:normal;">${courseNames}</span></div>` : '';
+                // Build instructor line for header (when a single instructor remains)
+                const instructorHeaderLine = showInstructorCol ? '' : `<div style="font-size:13px; color:#333;">المدرب: <span style="font-weight:normal;">${singleInstructorName}</span></div>`;
+
+                for (let i = 0; i < activeCommittees.length; i++) {
+                    const committee = activeCommittees[i];
+                    const size = committee.count;
+                    const roomName = committee.name;
+                    // Get room number from committeeRooms using original index
+                    const roomNumber = committeeRooms[committee.originalIndex]?.room || '';
+                    const group = trainees.slice(start, start + size);
+                    const firstId = group[0] ? group[0]['رقم المتدرب'] : '-';
+                    const lastId = group[group.length - 1] ? group[group.length - 1]['رقم المتدرب'] : '-';
+
+                    // Dynamic header info based on sort type
+                    let rangeLabel, rangeValue;
+                    if (currentSortOrder === 'traineeId') {
+                        rangeLabel = 'نطاق الأرقام';
+                        rangeValue = `${firstId} - ${lastId}`;
+                    } else if (currentSortOrder === 'referenceNumber') {
+                        const firstRef = group[0] ? group[0]['الرقم المرجعي'] : '-';
+                        const lastRef = group[group.length - 1] ? group[group.length - 1]['الرقم المرجعي'] : '-';
+                        const uniqueRefs = [...new Set(group.map(t => t['الرقم المرجعي'] || '-'))];
+                        rangeLabel = 'الأرقام المرجعية';
+                        rangeValue = uniqueRefs.length <= 3 ? uniqueRefs.join(' / ') : `${firstRef} - ${lastRef}`;
+                    } else if (currentSortOrder === 'instructor') {
+                        const instructors = [...new Set(group.map(t => t['المدرب'] || 'غير محدد'))];
+                        rangeLabel = 'المدربون';
+                        rangeValue = instructors.join(' / ');
+                    } else { // traineeName
+                        const firstLetter = (group[0] ? (group[0]['إسم المتدرب'] || group[0]['اسم المتدرب'] || '')[0] : '');
+                        const lastLetter = (group[group.length - 1] ? (group[group.length - 1]['إسم المتدرب'] || group[group.length - 1]['اسم المتدرب'] || '')[0] : '');
+                        rangeLabel = 'نطاق الأحرف';
+                        rangeValue = firstLetter === lastLetter ? firstLetter : `${firstLetter} - ${lastLetter}`;
+                    }
+
+
+
+                    // Split committee into pages based on traineesPerPage
+                    // If traineesPerPage is empty or <= 0, treat as Infinity (all in one page)
+                    let perPageInput = document.getElementById('traineesPerPage').value;
+                    let perPage = (perPageInput && perPageInput > 0) ? parseInt(perPageInput) : (group.length || 1);
+
+                    const totalPages = Math.ceil(group.length / perPage);
+
+                    // Extract College and Semester from the first record of the group (or global data if available)
+                    // Fallback to defaults if missing
+                    const sampleRecord = group[0] || (sf01Data && sf01Data.length > 0 ? sf01Data[0] : {});
+                    const collegeName = sampleRecord['الوحدة'] || 'الكلية التقنية';
+                    const semester = sampleRecord['الفصل التدريبي'] || '';
+
+                    for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+                        const pageStart = pageNum * perPage;
+                        const pageEnd = Math.min(pageStart + perPage, group.length);
+                        const pageGroup = group.slice(pageStart, pageEnd);
+                        const pageLabel = totalPages > 1 ? ` (صفحة ${pageNum + 1} من ${totalPages})` : '';
+
+
+
+                        html += `
+                    <div class="report-page">
+                        <div class="report-section">
+                            <table class="report-table" style="table-layout: fixed; width: 100%; margin-top: 10px;">
+                                <colgroup>
+                                    <col style="width: ${hideExtraCols ? '7%' : '5%'};">
+                                    <col style="width: ${hideExtraCols ? '11%' : '11%'};">
+                                    <col style="width: ${hideExtraCols ? '31.5%' : '22%'};">
+                                    ${hideExtraCols ? '' : '<col style="width: 18%;">'}
+                                    <col style="width: ${hideExtraCols ? '9%' : '10%'};">
+                                    ${showInstructorCol ? `<col style="width: ${hideExtraCols ? '33.5%' : '21%'};">` : ''}
+                                    <col style="width: ${hideExtraCols ? '8%' : '13%'};">
+                                </colgroup>
+                                <thead>
+                                    <tr class="header-row" style="background-color: #fff !important;">
+                                        <th colspan="${totalCols}" style="background-color: #fff !important; border:none; padding:0;">
+                                            
+                                            <div class="report-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; border-bottom: 1px solid #ccc; padding: 10px; direction: rtl; background: #fff;">
+                                                
+                                                <!-- Right Side (Institution Info) -->
+                                                <div style="width: 30%; text-align: center; font-weight: bold; font-family: 'Amiri', 'Tajawal', sans-serif; font-size: 14px; line-height: 1.6;">
+                                                    <div style="white-space:nowrap; font-size:12px;">المملكة العربية السعودية</div>
+                                                    <div style="white-space:nowrap; font-size:12px;">المؤسسة العامة للتدريب التقني والمهني</div>
+                                                    <div>${collegeName}</div>
+                                                    <div>${semester}</div>
+                                                </div>
+
+                                                <!-- Center (Logo Only) -->
+                                                <div style="width: 30%; text-align: center;">
+                                                    <img src="pic/logo.png" alt="Logo" style="max-height: 100px; width: auto;">
+                                                </div>
+
+                                                <!-- Left Side (Committee Info) -->
+                                                <div style="width: 35%; text-align: center; font-weight: bold; font-family: 'Amiri', 'Tajawal', sans-serif; font-size: 14px; line-height: 1.6;">
+                                                    <div class="committee-name-text" style="margin-bottom: 2px; font-size: 20px; font-weight:bold;">${roomName}</div>
+                                                    ${roomNumber ? `<div class="room-number-text" data-room="${roomNumber}" style="margin-bottom: 2px; font-size: 18px; font-weight:bold; color:#444;">قاعة: ${roomNumber}</div>` : ''}
+                                                    <div>عدد المتدربين: <span style="font-weight:normal;">${group.length}</span></div>
+                                                    ${courseNameHeaderLine}
+                                                    ${instructorHeaderLine}
+                                                </div>
+                                            </div>
+
+                                        </th>
+                                    </tr>
+                                    <tr style="background-color: #ABD8AE;">
+                                        <th style="background-color: #ABD8AE !important;">#</th>
+                                        <th style="background-color: #ABD8AE !important;">رقم المتدرب</th>
+                                        <th style="background-color: #ABD8AE !important;">اسم المتدرب</th>
+                                        ${hideExtraCols ? '' : '<th style="background-color: #ABD8AE !important;">اسم المقرر</th>'}
+                                        <th style="background-color: #ABD8AE !important;">الرقم المرجعي</th>
+                                        ${showInstructorCol ? '<th style="background-color: #ABD8AE !important;">المدرب</th>' : ''}
+                                        <th style="background-color: #ABD8AE !important;">توقيع المتدرب</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${pageGroup.map((t, idx) => `
+                                        <tr>
+                                            <td style="overflow: hidden !important;">${pageStart + idx + 1}</td>
+                                            <td style="overflow: hidden !important;">${t['رقم المتدرب'] || ''}</td>
+                                            <td style="overflow: hidden !important;">${t['إسم المتدرب'] || t['اسم المتدرب'] || ''}</td>
+                                            ${hideExtraCols ? '' : `<td style="overflow: hidden !important;">${t['اسم المقرر'] || ''}</td>`}
+                                            <td style="overflow: hidden !important;">${t['الرقم المرجعي'] || ''}</td>
+                                            ${showInstructorCol ? `<td style="overflow: hidden !important;">${t['المدرب'] || ''}</td>` : ''}
+                                            <td></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                                ${document.getElementById('showSignatureFooter')?.checked ? `
+                                <tfoot>
+                                    <tr>
+                                        <td colspan="${totalCols}" style="border: none; padding-top: 20px;">
+                                            <table style="width: 100%; border-collapse: collapse; border: 1px solid #000; table-layout: fixed;">
+                                                <colgroup>
+                                                    <col style="width: 33.33%;">
+                                                    <col style="width: 33.33%;">
+                                                    <col style="width: 33.34%;">
+                                                </colgroup>
+                                                <tr>
+                                                    <td style="width: 33.33%; border: 1px solid #000; padding: 8px; text-align: right; font-weight: bold; font-size: 11px;">المراقب الأول:</td>
+                                                    <td style="width: 33.33%; border: 1px solid #000; padding: 8px; text-align: right; font-weight: bold; font-size: 11px;">المراقب الثاني:</td>
+                                                    <td style="width: 33.33%; border: 1px solid #000; padding: 8px; text-align: right; font-weight: bold; font-size: 11px;">رئيس اللجنة:</td>
+                                                </tr>
+                                                <tr>
+                                                    <td style="width: 33.33%; height: 40px; border: 1px solid #000; padding: 8px; text-align: right; font-size: 11px;">التوقيع:</td>
+                                                    <td style="width: 33.33%; height: 40px; border: 1px solid #000; padding: 8px; text-align: right; font-size: 11px;">التوقيع:</td>
+                                                    <td style="width: 33.33%; height: 40px; border: 1px solid #000; padding: 8px; text-align: right; font-size: 11px;">التوقيع:</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                                ` : ''}
+                            </table>
+                        </div>
+                    </div>
+                `;
+                    }
+                    start += size;
+                }
+
+                document.getElementById('reportsContainer').innerHTML = html;
+
+                // Apply height styles based on current level immediately after rendering
+                setTimeout(() => {
+                    if (typeof currentRowHeightLevel !== 'undefined') {
+                        // Re-trigger setRowHeight to apply inline styles without regenerating
+                        // by passing the current level. The check `tppInput.value !== config.maxRows` 
+                        // will be false because generateReports doesn't change the input value,
+                        // so it will just reapply inline styles.
+                        setRowHeight(currentRowHeightLevel);
+                    }
+                }, 100);
+
+
+
+            } catch (e) {
+                console.error('Error generating reports:', e);
+                showToast('حدث خطأ في إنشاء التقارير', 'error');
+            }
+        }
+
+        function printReports() {
+            // Set page title to include course names
+            const courseNames = selectedCourses.map(key => {
+                const [code] = key.split('|');
+                const course = sf01Data.find(r => r['المقرر'] === code);
+                return course ? course['اسم المقرر'] : code;
+            }).join(' | ');
+            document.title = `توزيع المتدربين - ${courseNames || 'لجان الاختبارات'}`;
+
+            window.print();
+        }
+
+        function updateFontSize() {
+            const size = document.getElementById('fontSizeSlider').value;
+            document.getElementById('fontSizeValue').textContent = size + 'pt';
+
+            // Apply to all report tables
+            document.querySelectorAll('.report-table').forEach(table => {
+                table.style.fontSize = size + 'pt';
+            });
+            document.querySelectorAll('.report-table th, .report-table td').forEach(cell => {
+                cell.style.fontSize = size + 'pt';
+            });
+            document.querySelectorAll('.report-header h2').forEach(h2 => {
+                h2.style.fontSize = (parseInt(size) + 4) + 'pt';
+            });
+            document.querySelectorAll('.report-header .info').forEach(info => {
+                info.style.fontSize = size + 'pt';
+            });
+        }
+
+        function updateTraineesPerPage() {
+            const value = parseInt(document.getElementById('traineesPerPage').value);
+            if (value >= 5 && value <= 50) {
+                traineesPerPage = value;
+                generateReports(); // Regenerate reports with new pagination
+            }
+        }
+
+        let currentBaseFontSize = 12; // Base font size, updated by density slider
+
+        function autoFitText() {
+            const cells = document.querySelectorAll('.report-table td, .report-table th');
+            cells.forEach(cell => {
+                let size = currentBaseFontSize; // Start with the density-appropriate size
+                cell.style.setProperty('font-size', size + 'px', 'important');
+
+                // Absolute strict single line
+                cell.style.setProperty('white-space', 'nowrap', 'important');
+                cell.style.setProperty('word-break', 'keep-all', 'important');
+                cell.style.setProperty('overflow', 'hidden', 'important');
+
+                // Decrease size until content fits both vertically and horizontally
+                // Allow 1px tolerance
+                while ((cell.scrollHeight > cell.clientHeight + 1 || cell.scrollWidth > cell.clientWidth + 1) && size > 5) {
+                    size -= 0.5;
+                    cell.style.setProperty('font-size', size + 'px', 'important');
+                }
+            });
+        }
+
+        // Initialize with default level (may be overridden by restoreData)
+        setTimeout(() => setRowHeight(3), 200);
+
+        let currentRowHeightLevel = 3; // Track current level for saving
+
+        function setRowHeight(level) {
+            const labelEl = document.getElementById('rowHeightLabel');
+
+            // Update active state in UI
+            document.querySelectorAll('.row-height-circle').forEach(circle => {
+                circle.classList.remove('active');
+                circle.style.background = 'var(--bg-header)';
+                circle.style.borderColor = 'var(--border-dark)';
+                if (parseInt(circle.dataset.level) === level) {
+                    circle.classList.add('active');
+                    circle.style.background = 'var(--accent-green)';
+                    circle.style.borderColor = 'var(--accent-green)';
+                }
+            });
+
+            // Map levels to height values (px) AND base font sizes AND padding AND target row capacity
+            const configMap = {
+                1: { height: 22,   fontSize: 8,    padding: '0px 3px', maxRows: 35, label: '35 صف (مضغوط جداً)' },
+                2: { height: 26,   fontSize: 9,    padding: '1px 3px', maxRows: 30, label: '30 صف (مضغوط)' },
+                3: { height: 31.5, fontSize: 10,   padding: '2px 4px', maxRows: 25, label: '25 صف (متوسط)' },
+                4: { height: 39,   fontSize: 11,   padding: '4px 6px', maxRows: 20, label: '20 صف (مريح)' },
+                5: { height: 49,   fontSize: 12,   padding: '6px 8px', maxRows: 15, label: '15 صف (واسع)' }
+            };
+
+            const config = configMap[level] || configMap[3];
+            if (labelEl) labelEl.textContent = config.label;
+
+            // Update global base font size
+            currentBaseFontSize = config.fontSize;
+
+            // Set CSS variable
+            document.documentElement.style.setProperty('--print-row-height', config.height + 'px');
+
+            // Set the trainees per page input to match the slider's max capacity
+            const tppInput = document.getElementById('traineesPerPage');
+            let needRegenerate = false;
+            if (tppInput && tppInput.value !== config.maxRows.toString()) {
+                tppInput.value = config.maxRows;
+                // Only trigger regenerate if we have already rendered reports
+                if (document.querySelectorAll('.report-page').length > 0) {
+                    needRegenerate = true;
+                }
+            }
+
+            // FORCE inline styles on all cells to ensure print rendering respects it
+            const applyStyles = () => {
+                const cells = document.querySelectorAll('.report-table td, .report-table th');
+                cells.forEach(cell => {
+                    // Skip the main header TH which contains the logo and info
+                    if (cell.colSpan > 2) return;
+                    
+                    cell.style.setProperty('box-sizing', 'border-box', 'important');
+                    cell.style.setProperty('padding', config.padding, 'important');
+                    // Use larger line-height for Arabic text to prevent vertical overlap
+                    cell.style.setProperty('line-height', (config.fontSize * 1.4) + 'px', 'important');
+                    cell.style.setProperty('white-space', 'nowrap', 'important');
+                    cell.style.setProperty('word-break', 'keep-all', 'important');
+                    cell.style.setProperty('overflow', 'hidden', 'important');
+                    
+                    if (cell.tagName === 'TD') {
+                        cell.style.setProperty('height', config.height + 'px', 'important');
+                    } else if (cell.tagName === 'TH') {
+                        // Headers should also be compact
+                        cell.style.setProperty('height', (config.height + 2) + 'px', 'important');
+                        cell.style.setProperty('font-size', config.fontSize + 'px', 'important');
+                    }
+                });
+                
+                // Also explicitly set TR heights
+                const rows = document.querySelectorAll('.report-table tbody tr');
+                rows.forEach(row => {
+                    row.style.setProperty('height', config.height + 'px', 'important');
+                });
+
+                // Trigger auto-fit after a brief delay
+                setTimeout(() => {
+                    autoFitText();
+                }, 50);
+            };
+
+            if (needRegenerate) {
+                // Save setting first
+                currentRowHeightLevel = level;
+                savePrintSettings();
+                // Regenerate reports to apply new pagination, then apply styles
+                generateReports();
+                setTimeout(applyStyles, 200); // wait for generateReports to render
+            } else {
+                applyStyles();
+                currentRowHeightLevel = level;
+                savePrintSettings();
+            }
+        }
+
+        function savePrintSettings() {
+            const sortVal = document.querySelector('input[name="sortOrder"]:checked')?.value || 'traineeId';
+            const tppVal = document.getElementById('traineesPerPage')?.value || '';
+            const sigVal = document.getElementById('showSignatureFooter')?.checked ?? true;
+            const hideColsVal = document.getElementById('hideExtraColumns')?.checked ?? false;
+            saveToIndexedDB({
+                rowHeightLevel: currentRowHeightLevel,
+                sortOrder: sortVal,
+                traineesPerPage: tppVal,
+                showSignatureFooter: sigVal,
+                hideExtraColumns: hideColsVal
+            }, 'userPrintSettings');
+        }
+
+
+
+        function exportToExcel() {
+            // Check if reports exist
+            const reportPages = document.querySelectorAll('.report-page');
+            if (reportPages.length === 0) {
+                showToast('لا توجد تقارير للتصدير. تأكد من إنشاء التقارير أولاً.', 'warning');
+                return;
+            }
+
+            showToast('جاري تحميل مكتبة Excel...', 'info');
+
+            // Get course info from selected courses
+            const courseNames = selectedCourses.map(key => {
+                const [code] = key.split('|');
+                const course = sf01Data.find(r => r['المقرر'] === code);
+                return course ? `${code} - ${course['اسم المقرر']}` : code;
+            }).join(' | ');
+
+            const firstCourse = selectedCourses.length > 0 ? selectedCourses[0].split('|')[0] : '';
+            const courseData = sf01Data.find(r => r['المقرر'] === firstCourse);
+            const collegeName = courseData?.['الوحدة'] || '';
+            const semester = courseData?.['الفصل التدريبي'] || '';
+            const totalTrainees = document.querySelectorAll('.report-page .report-table > tbody > tr').length;
+
+            // Check if extra columns should be hidden
+            const hideExtraCols = document.getElementById('hideExtraColumns')?.checked || false;
+            // When a single instructor remains, drop the instructor column and show the name in the header
+            const showInstructorCol = !isSingleInstructor();
+            const singleInstructorName = showInstructorCol ? '' : getActiveInstructors()[0];
+            const excelColCount = (hideExtraCols ? 6 : 8) - (showInstructorCol ? 0 : 1);
+
+            // Create a temporary consolidated table from all report tables
+            const tempTable = document.createElement('table');
+            tempTable.id = 'tempExportTable';
+            tempTable.style.display = 'none';
+            // Store modes as data attributes for generateExcelFromTable
+            tempTable.dataset.hideExtraCols = hideExtraCols ? 'true' : 'false';
+            tempTable.dataset.showInstructorCol = showInstructorCol ? 'true' : 'false';
+
+            // Extra header info row for the single-instructor case
+            const instructorInfoRow = showInstructorCol
+                ? ''
+                : `<tr><td>المدرب:</td><td colspan="${hideExtraCols ? excelColCount - 1 : 5}">${singleInstructorName}</td>${hideExtraCols ? '' : '<td colspan="2" data-logo="true"></td>'}</tr>`;
+
+            const thead = document.createElement('thead');
+
+            if (hideExtraCols) {
+                // Compact header: no committee column, no course column, course in header
+                thead.innerHTML = `
+                    <tr><th colspan="${excelColCount}">توزيع المتدربين على لجان الاختبارات</th></tr>
+                    <tr><td>الكلية / الوحدة:</td><td colspan="${excelColCount - 1}">${collegeName}</td></tr>
+                    <tr><td>الفصل التدريبي:</td><td colspan="${excelColCount - 1}">${semester}</td></tr>
+                    <tr><td>المقرر:</td><td colspan="${excelColCount - 1}">${courseNames}</td></tr>
+                    ${instructorInfoRow}
+                    <tr><td>اسم اللجنة:</td><td colspan="${excelColCount - 1}" data-committee-name="true"></td></tr>
+                    <tr><td>رقم القاعة:</td><td colspan="${excelColCount - 1}" data-room-number="true"></td></tr>
+                    <tr><td colspan="${excelColCount}"></td></tr>
+                    <tr>
+                        <th>#</th>
+                        <th>رقم المتدرب</th>
+                        <th>اسم المتدرب</th>
+                        <th>الرقم المرجعي</th>
+                        ${showInstructorCol ? '<th>المدرب</th>' : ''}
+                        <th>توقيع المتدرب</th>
+                    </tr>
+                `;
+            } else {
+                // Full header with all columns
+                thead.innerHTML = `
+                    <tr><th colspan="${excelColCount}">توزيع المتدربين على لجان الاختبارات</th></tr>
+                    <tr><td>الكلية / الوحدة:</td><td colspan="5">${collegeName}</td><td colspan="2" data-logo="true"></td></tr>
+                    <tr><td>الفصل التدريبي:</td><td colspan="5">${semester}</td><td colspan="2" data-logo="true"></td></tr>
+                    ${instructorInfoRow}
+                    <tr><td>اسم اللجنة:</td><td colspan="5" data-committee-name="true"></td><td colspan="2" data-logo="true"></td></tr>
+                    <tr><td>رقم القاعة:</td><td colspan="5" data-room-number="true"></td><td colspan="2"></td></tr>
+                    <tr><td colspan="${excelColCount}"></td></tr>
+                    <tr>
+                        <th>اللجنة</th>
+                        <th>#</th>
+                        <th>رقم المتدرب</th>
+                        <th>اسم المتدرب</th>
+                        <th>اسم المقرر</th>
+                        <th>الرقم المرجعي</th>
+                        ${showInstructorCol ? '<th>المدرب</th>' : ''}
+                        <th>توقيع المتدرب</th>
+                    </tr>
+                `;
+            }
+            tempTable.appendChild(thead);
+
+            // Add data from all report tables
+            const tbody = document.createElement('tbody');
+            let rowCount = 0;
+
+            reportPages.forEach((page, pageIdx) => {
+                // Extract the (possibly edited) committee name and remove page suffix like "(صفحة 1 من 2)"
+                let roomName = page.querySelector('.committee-name-text')?.textContent?.trim() || `لجنة ${pageIdx + 1}`;
+                roomName = roomName.replace(/\s*\(صفحة\s*\d+\s*من\s*\d+\)/, '').trim();
+                // Direct-child tbody rows only — avoids picking up the rows of the nested
+                // signature table inside <tfoot> (which would leak into the data as garbage rows).
+                const rows = page.querySelectorAll('.report-table > tbody > tr');
+                // Expected number of data columns in a report row (incl. the trailing signature cell)
+                const expectedReportCols = (hideExtraCols ? 6 : 7) - (showInstructorCol ? 0 : 1);
+
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    // Report rows already match the active column set (instructor/course columns
+                    // may be absent). Copy every data cell except the report's trailing (empty)
+                    // signature cell, optionally prepend the committee name, then append a blank
+                    // signature cell for Excel.
+                    if (cells.length >= expectedReportCols) {
+                        const dataCells = Array.from(cells).slice(0, cells.length - 1)
+                            .map(c => c.textContent || '');
+                        const rowCells = hideExtraCols ? dataCells : [roomName, ...dataCells];
+                        rowCells.push(' ');
+                        const newRow = document.createElement('tr');
+                        newRow.innerHTML = rowCells.map(t => `<td>${t}</td>`).join('');
+                        tbody.appendChild(newRow);
+                        rowCount++;
+                    }
+                });
+            });
+            tempTable.appendChild(tbody);
+
+            if (rowCount === 0) {
+                showToast('لا توجد بيانات للتصدير.', 'warning');
+                return;
+            }
+
+            document.body.appendChild(tempTable);
+
+            // Load ExcelJS library and export
+            if (typeof ExcelJS === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+                script.onload = () => {
+                    generateExcelFromTable(tempTable, courseNames);
+                };
+                script.onerror = () => {
+                    showToast('فشل تحميل مكتبة Excel. تحقق من اتصال الإنترنت.', 'error');
+                    document.body.removeChild(tempTable);
+                };
+                document.head.appendChild(script);
+            } else {
+                generateExcelFromTable(tempTable, courseNames);
+            }
+        }
+
+        async function generateExcelFromTable(table, courseNames) {
+            try {
+                const hideExtraCols = table.dataset.hideExtraCols === 'true';
+                const showInstructorCol = table.dataset.showInstructorCol !== 'false';
+                const colCount = (hideExtraCols ? 6 : 8) - (showInstructorCol ? 0 : 1);
+                // Number of label/value info rows: base (college, semester, committee, room) = 4,
+                // plus a course row in hide mode, plus an instructor row in single-instructor mode.
+                const infoRowCount = 4 + (hideExtraCols ? 1 : 0) + (showInstructorCol ? 0 : 1);
+                // Header rows = title + info rows + separator + column header
+                const headerRowCount = infoRowCount + 3;
+                // One note row is prepended above the table; it is kept OUT of the print area.
+                const topOffset = 1;
+                const noteRowIdx = 0;
+                const titleRowIdx = topOffset; // title sits just below the note
+                // Header-relative indices (committee = second-to-last info row, room = last info row)
+                const committeeNameRowIdx = infoRowCount - 1;
+                const roomNumberRowIdx = infoRowCount;
+                // sheetData-relative indices (after the note row is prepended)
+                const separatorRowIdx = topOffset + headerRowCount - 2;
+                const colHeaderRowIdx = topOffset + headerRowCount - 1;
+                const infoRowStart = topOffset + 1;
+                const infoRowEnd = topOffset + infoRowCount;
+
+                // Group data by committee
+                const committees = new Map(); // Map: committeeName -> [rows]
+                const headerRows = [];
+
+                const allRows = table.querySelectorAll('tr');
+                allRows.forEach((row, rowIndex) => {
+                    const cells = row.querySelectorAll('th, td');
+                    const rowData = [];
+                    for (let i = 0; i < colCount; i++) {
+                        const cellText = cells[i]?.textContent?.trim() || ' ';
+                        rowData.push(cellText === '' ? ' ' : cellText);
+                    }
+
+                    if (rowIndex < headerRowCount) {
+                        headerRows.push(rowData);
+                    } else {
+                        if (hideExtraCols) {
+                            // No committee column - we need to figure out which committee this row belongs to
+                            // We'll assign it later using committeeDistribution counts
+                            if (!committees.has('__all__')) {
+                                committees.set('__all__', []);
+                            }
+                            committees.get('__all__').push(rowData);
+                        } else {
+                            // Data row - group by committee (column 0)
+                            const committeeName = rowData[0];
+                            if (!committees.has(committeeName)) {
+                                committees.set(committeeName, []);
+                            }
+                            committees.get(committeeName).push(rowData);
+                        }
+                    }
+                });
+
+                // In hide mode, redistribute rows by committee using committeeDistribution
+                if (hideExtraCols && committees.has('__all__')) {
+                    const allDataRows = committees.get('__all__');
+                    committees.delete('__all__');
+                    
+                    const activeCommittees = committeeDistribution.filter(c => c.count > 0);
+                    let rowStart = 0;
+                    activeCommittees.forEach(c => {
+                        const chunk = allDataRows.slice(rowStart, rowStart + c.count);
+                        if (chunk.length > 0) {
+                            committees.set(c.name, chunk);
+                        }
+                        rowStart += c.count;
+                    });
+                }
+
+                // Try to load the institution logo as a base64 data URL (optional - export works without it)
+                let logoBase64 = null;
+                let logoError = '';
+                // Method 1: fetch the file directly (works when served over http/https)
+                try {
+                    const logoResp = await fetch('pic/logo.png');
+                    if (logoResp.ok) {
+                        const logoBlob = await logoResp.blob();
+                        logoBase64 = await new Promise(resolve => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(reader.result);
+                            reader.onerror = () => resolve(null);
+                            reader.readAsDataURL(logoBlob);
+                        });
+                        if (!logoBase64) logoError = 'تعذّرت قراءة ملف الشعار';
+                    } else {
+                        logoError = `لم يُعثر على الملف (HTTP ${logoResp.status})`;
+                    }
+                } catch (e) {
+                    logoError = e.message || 'فشل جلب الملف';
+                }
+                // Method 2 (fallback): reuse the logo already shown in the report via canvas
+                if (!logoBase64) {
+                    try {
+                        const imgEl = document.querySelector('.report-page img[src*="logo"]') ||
+                                      document.querySelector('img[src*="logo"]');
+                        if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = imgEl.naturalWidth;
+                            canvas.height = imgEl.naturalHeight;
+                            canvas.getContext('2d').drawImage(imgEl, 0, 0);
+                            logoBase64 = canvas.toDataURL('image/png');
+                            logoError = '';
+                        }
+                    } catch (e) {
+                        // Canvas can be tainted when running from file:// - keep the original error
+                    }
+                }
+                // Tell the user explicitly if the logo could not be embedded
+                if (!logoBase64) {
+                    showToast(`⚠️ لم يُدرج الشعار في ملف Excel${logoError ? ` (${logoError})` : ''}. تأكد من وجود الملف pic/logo.png وأن الموقع يعمل عبر خادم وليس فتح الملف مباشرة.`, 'warning');
+                }
+
+                // Define styles (ARGB - ExcelJS requires the leading alpha byte)
+                const thinBorder = {
+                    top: { style: 'thin', color: { argb: 'FF333333' } },
+                    bottom: { style: 'thin', color: { argb: 'FF333333' } },
+                    left: { style: 'thin', color: { argb: 'FF333333' } },
+                    right: { style: 'thin', color: { argb: 'FF333333' } }
+                };
+                const solidFill = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+
+                // Create workbook (RTL views are set per-worksheet below)
+                const workbook = new ExcelJS.Workbook();
+
+                // Load the logo once as an HTMLImageElement so we can both measure its natural
+                // aspect ratio and pre-composite it (centered) onto a transparent canvas.
+                let logoImg = null;
+                let logoAspect = 311 / 370; // fallback (current logo) width / height
+                if (logoBase64) {
+                    try {
+                        logoImg = await new Promise(resolve => {
+                            const im = new Image();
+                            im.onload = () => resolve(im);
+                            im.onerror = () => resolve(null);
+                            im.src = logoBase64;
+                        });
+                        if (logoImg && logoImg.naturalHeight > 0) {
+                            logoAspect = logoImg.naturalWidth / logoImg.naturalHeight;
+                        }
+                    } catch (e) { /* keep fallback aspect */ }
+                }
+
+                // ---- Logo block geometry (identical for every committee sheet) -----------------
+                // Fixed column widths per role; the last two columns of the info rows are reserved
+                // as an empty merged block that will hold the logo.
+                // Full mode: [اللجنة, #, رقم المتدرب, اسم المتدرب, اسم المقرر, الرقم المرجعي, المدرب, توقيع]
+                // Hide mode: [#, رقم المتدرب, اسم المتدرب, الرقم المرجعي, المدرب, توقيع]
+                const colWidths = hideExtraCols
+                    ? [5, 13, 28, 14, 22, 16]
+                    : [16, 5, 13, 26, 22, 14, 20, 16];
+                // Drop the instructor column width (second-to-last) in single-instructor mode
+                if (!showInstructorCol) colWidths.splice(colWidths.length - 2, 1);
+                const lastCol = colCount - 1;
+                const logoFirstCol = lastCol - 1;   // first of the two reserved logo columns
+                const valueLastCol = lastCol - 2;   // info values stop just before the logo block
+                const infoRowHeightPt = 18;         // fixed so the block height is deterministic
+
+                // Excel cell-size -> pixel conversions (Calibri 11: width 8.43 -> 64px; 1pt -> 96/72px)
+                const pxW = (w) => Math.round(w * 7 + 5);
+                const pxH = (pt) => Math.round(pt * 96 / 72);
+                const blockWidthPx = colWidths
+                    .slice(logoFirstCol, lastCol + 1)
+                    .reduce((sum, w) => sum + pxW(w), 0);
+                const blockHeightPx = (infoRowEnd - infoRowStart + 1) * pxH(infoRowHeightPt);
+
+                // Pre-composite the logo, centered, onto a transparent canvas the EXACT size of the
+                // reserved block. Centering is baked into the image itself, so it stays centered no
+                // matter how Excel mirrors the RTL column axis. Because the canvas has the same
+                // aspect ratio as the block, the two-cell anchor below fills the block with no
+                // stretching of the logo (see LOGO_EXCEL_ATTEMPTS.md, idea ج).
+                let composedLogoImageId = null;
+                if (logoImg) {
+                    const scale = 3; // render at 3x for crisp printing; displayed at the block size
+                    const canvas = document.createElement('canvas');
+                    canvas.width = blockWidthPx * scale;
+                    canvas.height = blockHeightPx * scale;
+                    const ctx = canvas.getContext('2d');
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+
+                    // Fit the logo inside the block at its true aspect ratio (capped for consistency)
+                    const maxLogoH = 84;
+                    const padX = 8;
+                    let logoH = Math.min(blockHeightPx - 12, maxLogoH);
+                    let logoW = logoH * logoAspect;
+                    if (logoW > blockWidthPx - 2 * padX) {
+                        logoW = blockWidthPx - 2 * padX;
+                        logoH = logoW / logoAspect;
+                    }
+                    const logoX = (blockWidthPx - logoW) / 2;
+                    const logoY = (blockHeightPx - logoH) / 2;
+                    ctx.drawImage(logoImg, logoX * scale, logoY * scale, logoW * scale, logoH * scale);
+
+                    composedLogoImageId = workbook.addImage({
+                        base64: canvas.toDataURL('image/png'),
+                        extension: 'png'
+                    });
+                }
+
+                // Create a sheet for each committee
+                let sheetIndex = 0;
+                committees.forEach((rows, committeeName) => {
+                    sheetIndex++;
+
+                    // Clone header rows and customize for this committee
+                    const customHeaderRows = headerRows.map((row, rowIdx) => {
+                        const newRow = [...row];
+                        if (rowIdx === committeeNameRowIdx) {
+                            // Fill with committee name
+                            newRow[1] = committeeName;
+                        } else if (rowIdx === roomNumberRowIdx) {
+                            // Fill with room number
+                            const committeeIdx = committeeDistribution.findIndex(c => c.name === committeeName);
+                            const roomObj = committeeIdx >= 0 ? committeeRooms[committeeIdx] : null;
+                            newRow[1] = roomObj?.room || '';
+                        }
+                        return newRow;
+                    });
+
+                    // A note row above the table (excluded from the print area below) explaining
+                    // how to auto-fit columns, plus the customized headers + committee rows.
+                    const noteRow = Array(colCount).fill('');
+                    noteRow[0] = '💡 لضبط عرض الأعمدة: انقر على المثلث أعلى يمين الورقة لتحديد كل الخلايا، ثم انقر نقراً مزدوجاً على الحدّ الفاصل بين أي عمودين. (هذا السطر لا يظهر عند الطباعة)';
+                    const sheetData = [noteRow, ...customHeaderRows, ...rows];
+
+                    // Add signature section at end
+                    const dataEndRow = sheetData.length;
+
+                    // 2 empty rows + 1 spacer row
+                    const emptyRow = Array(colCount).fill('');
+                    sheetData.push([...emptyRow]);
+                    sheetData.push([...emptyRow]);
+                    sheetData.push([...emptyRow]);
+
+                    // Signature labels and values — split colCount into 3 groups (one per signer).
+                    // e.g. 8→3-2-3, 7→3-1-3, 6→2-2-2, 5→2-1-2.
+                    const sigEdge = Math.ceil(colCount / 3);
+                    const sigGroupSizes = [sigEdge, colCount - 2 * sigEdge, sigEdge];
+                    const sigLabelsList = ['المراقب الأول:', 'المراقب الثاني:', 'رئيس اللجنة:'];
+                    const sigGroups = [];
+                    const sigLabelRow = Array(colCount).fill('');
+                    const sigSignRow = Array(colCount).fill('');
+                    let sigCol = 0;
+                    sigGroupSizes.forEach((gsize, gi) => {
+                        sigLabelRow[sigCol] = sigLabelsList[gi];
+                        sigSignRow[sigCol] = 'التوقيع:';
+                        sigGroups.push([sigCol, sigCol + gsize - 1]);
+                        sigCol += gsize;
+                    });
+                    sheetData.push(sigLabelRow);
+                    sheetData.push(sigSignRow);
+
+                    // Sheet name (max 31 chars, clean invalid chars)
+                    let sheetName = committeeName.substring(0, 28).replace(/[\\/*?:\[\]]/g, '');
+                    if (sheetName.trim() === '') sheetName = `لجنة ${sheetIndex}`;
+
+                    const ws = workbook.addWorksheet(sheetName, {
+                        views: [{ rightToLeft: true }],
+                        pageSetup: {
+                            // Fit all columns onto a single page width; let height span as needed
+                            fitToPage: true,
+                            fitToWidth: 1,
+                            fitToHeight: 0,
+                            orientation: 'portrait',
+                            paperSize: 9, // A4
+                            horizontalCentered: true,
+                            margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 }
+                        }
+                    });
+
+                    // Write all rows
+                    sheetData.forEach(rowArr => ws.addRow(rowArr));
+
+                    // Apply styles cell-by-cell (R, C are 0-based; ExcelJS cells are 1-based)
+                    for (let R = 0; R < sheetData.length; R++) {
+                        for (let C = 0; C < colCount; C++) {
+                            const cell = ws.getCell(R + 1, C + 1);
+
+                            if (R === noteRowIdx) {
+                                // Instruction note (above the print area) - distinct amber styling
+                                cell.fill = solidFill('FFFFF3CD');
+                                cell.font = { size: 10, bold: true, color: { argb: 'FF8A6D00' } };
+                                cell.alignment = { horizontal: 'center', vertical: 'middle', readingOrder: 'rtl', wrapText: true };
+                            } else if (R === titleRowIdx) {
+                                // Title
+                                cell.fill = solidFill('FFD4A017');
+                                cell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 14 };
+                                cell.alignment = { horizontal: 'center', vertical: 'middle', readingOrder: 'rtl' };
+                                cell.border = thinBorder;
+                            } else if (R >= infoRowStart && R <= infoRowEnd) {
+                                // Info rows (label + value)
+                                const isLabel = C === 0;
+                                cell.fill = solidFill(isLabel ? 'FFE5E7EB' : 'FFFFFFFF');
+                                cell.font = { size: 11, bold: isLabel };
+                                cell.alignment = { horizontal: 'right', vertical: 'middle', readingOrder: 'rtl', wrapText: true };
+                                cell.border = thinBorder;
+                            } else if (R === separatorRowIdx) {
+                                // Blank separator row
+                                cell.fill = solidFill('FFFFFFFF');
+                            } else if (R === colHeaderRowIdx) {
+                                // Column headers
+                                cell.fill = solidFill('FF1E3A5F');
+                                cell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 11 };
+                                cell.alignment = { horizontal: 'center', vertical: 'middle', readingOrder: 'rtl' };
+                                cell.border = thinBorder;
+                            } else if (R < dataEndRow) {
+                                // Data rows (alternating fill); wrap long names instead of clipping
+                                const isEven = (R - colHeaderRowIdx) % 2 === 0;
+                                cell.fill = solidFill(isEven ? 'FFF9FAFB' : 'FFFFFFFF');
+                                cell.font = { size: 10 };
+                                cell.alignment = { horizontal: 'center', vertical: 'middle', readingOrder: 'rtl', wrapText: true };
+                                cell.border = thinBorder;
+                            } else if (R === dataEndRow + 2) {
+                                // Spacer row - no borders
+                                cell.fill = solidFill('FFFFFFFF');
+                            } else if (R === dataEndRow + 3) {
+                                // Signature labels
+                                cell.font = { bold: true, size: 11 };
+                                cell.alignment = { horizontal: 'right', vertical: 'middle', readingOrder: 'rtl' };
+                                cell.border = thinBorder;
+                            } else if (R === dataEndRow + 4) {
+                                // Empty signature row
+                                cell.alignment = { horizontal: 'right', vertical: 'middle', readingOrder: 'rtl' };
+                                cell.border = thinBorder;
+                            }
+                        }
+                    }
+
+                    // Row heights: note, title, and column-header rows
+                    ws.getRow(noteRowIdx + 1).height = 30;
+                    ws.getRow(titleRowIdx + 1).height = 26;
+                    ws.getRow(colHeaderRowIdx + 1).height = 20;
+
+                    // Apply the fixed column widths (defined once above). Long-text columns wrap
+                    // instead of being clipped (alignment set further up).
+                    for (let C = 0; C < colCount; C++) {
+                        ws.getColumn(C + 1).width = colWidths[C] || 14;
+                    }
+
+                    // Merges (convert 0-based ranges to ExcelJS 1-based row/col).
+                    // lastCol / logoFirstCol / valueLastCol are defined once above the loop; the last
+                    // two columns of the info rows are reserved as an empty merged block for the logo.
+                    const merge = (r1, c1, r2, c2) => ws.mergeCells(r1 + 1, c1 + 1, r2 + 1, c2 + 1);
+
+                    merge(noteRowIdx, 0, noteRowIdx, lastCol);        // Instruction note (full width)
+                    merge(titleRowIdx, 0, titleRowIdx, lastCol);      // Title (full width)
+                    for (let r = infoRowStart; r <= infoRowEnd; r++) {
+                        merge(r, 1, r, valueLastCol);                 // Info value cells
+                    }
+                    merge(separatorRowIdx, 0, separatorRowIdx, lastCol); // Separator (full width)
+                    merge(infoRowStart, logoFirstCol, infoRowEnd, lastCol); // Reserved logo block
+
+                    // Signature merges — one merged block per signer group (labels + signature rows)
+                    sigGroups.forEach(([c1, c2]) => {
+                        merge(dataEndRow + 3, c1, dataEndRow + 3, c2);
+                        merge(dataEndRow + 4, c1, dataEndRow + 4, c2);
+                    });
+
+                    // Place the pre-composited logo so it fills the reserved merged block exactly.
+                    // The logo is already centered *inside* the image (with transparent padding) and
+                    // the image shares the block's aspect ratio, so a two-cell anchor on integer cell
+                    // boundaries (no fractional offsets) fills the block without stretching the logo
+                    // and keeps it centered regardless of the sheet's RTL direction.
+                    if (composedLogoImageId !== null) {
+                        // Fix the info-row heights so the block matches the composited image's size.
+                        for (let r = infoRowStart; r <= infoRowEnd; r++) {
+                            ws.getRow(r + 1).height = infoRowHeightPt;
+                        }
+                        ws.addImage(composedLogoImageId, {
+                            tl: { col: logoFirstCol, row: infoRowStart },
+                            br: { col: lastCol + 1, row: infoRowEnd + 1 },
+                            editAs: 'oneCell'
+                        });
+                    }
+
+                    // Keep the instruction note out of the print area (start printing at the title row)
+                    ws.pageSetup.printArea = `A${titleRowIdx + 1}:${ws.getColumn(colCount).letter}${sheetData.length}`;
+                });
+
+                // Export file (ExcelJS writes a buffer; trigger download via a Blob)
+                const fileNameBase = courseNames.length > 50 ? 'توزيع_المتدربين' : `توزيع_${courseNames.replace(/[|\/\\:*?"<>]/g, '_').substring(0, 50)}`;
+                const buffer = await workbook.xlsx.writeBuffer();
+                const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${fileNameBase}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+                showToast(`تم تصدير ${committees.size} لجنة في ملف Excel`, 'success');
+            } catch (err) {
+                console.error('Excel export error:', err);
+                showToast('حدث خطأ في التصدير: ' + err.message, 'error');
+            } finally {
+                document.body.removeChild(table);
+            }
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Don't trigger navigation when typing in input fields
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // For RTL: Left arrow = next (forward), Right arrow = previous (back)
+            if (e.key === 'ArrowLeft') nextStep();
+            if (e.key === 'ArrowRight') previousStep();
+            if (e.ctrlKey && e.key === 'p') { e.preventDefault(); window.print(); }
+        });
+
+        // Initialize Lucide icons after DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+        });
+
+        // Also try immediate call in case DOMContentLoaded already fired
+        if (document.readyState !== 'loading') {
+            lucide.createIcons();
+        }
